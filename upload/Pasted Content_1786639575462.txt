@@ -1,0 +1,1928 @@
+PRD — AI HTML Workspace Editor
+
+1. Product Overview
+
+Build a polished browser-based AI HTML Workspace Editor for creating, editing, previewing, testing, and downloading multi-file static websites through an AI coding agent.
+
+The product combines:
+
+- AI coding agent
+- Multi-file HTML/CSS/JS editor
+- Live website preview
+- Browser automation/testing
+- Console and error inspection
+- AI reasoning/thinking panel
+- Collapsible tool-call cards
+- Chat history
+- Workspace management
+- OpenAI-compatible API configuration
+- ZIP workspace export
+
+The application should feel like a modern developer tool rather than a basic HTML playground.
+
+The primary desktop experience uses a three-zone layout:
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Sidebar │                 Workspace Header                               │
+│         ├────────────────────────────────────┬───────────────────────────┤
+│         │                                    │                           │
+│         │       Editor / Preview Area        │        AI Chat             │
+│         │                                    │                           │
+│         │                                    │                           │
+│         │                                    │                           │
+│         │                                    │                           │
+│         ├────────────────────────────────────┤                           │
+│         │ Editor / Preview Controls          │        Prompt Box          │
+└─────────┴────────────────────────────────────┴───────────────────────────┘
+
+The interface must have clear visual hierarchy and avoid overcrowding.
+
+---
+
+2. Design Direction
+
+Visual style
+
+Use a modern developer-tool aesthetic:
+
+- Rounded cards
+- Subtle borders
+- Moderate corner radius
+- Clean typography
+- Compact controls
+- Smooth transitions
+- Minimal shadows
+- Strong spacing hierarchy
+- Dark and light appearance support
+- Responsive behavior
+- Keyboard accessibility
+
+Do not make every element look like a floating card. Panels should primarily use borders and background separation.
+
+Component hierarchy
+
+Use three visual levels:
+
+Level 1 — Application surfaces
+
+Large areas such as:
+
+- Sidebar
+- Editor
+- Preview
+- Chat
+
+Use subtle background differences and borders.
+
+Level 2 — Interactive containers
+
+Examples:
+
+- File explorer
+- Chat messages
+- Thinking panel
+- Tool cards
+- Prompt box
+- Settings sections
+
+Use rounded corners and subtle borders.
+
+Level 3 — Controls
+
+Examples:
+
+- Buttons
+- Tabs
+- Dropdowns
+- Icon buttons
+- Toggles
+
+Keep these compact.
+
+---
+
+3. Application Shell
+
+Desktop layout:
+
+┌──────────────┬─────────────────────────────────────────────────────────┐
+│              │ Workspace Header                                        │
+│              ├──────────────────────────────┬──────────────────────────┤
+│   Sidebar    │                              │                          │
+│              │     Workspace Area           │       AI Chat             │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              ├──────────────────────────────┤                          │
+│              │ Editor / Preview Toolbar     │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              │                          │
+│              │                              ├──────────────────────────┤
+│              │                              │       Prompt Box         │
+└──────────────┴──────────────────────────────┴──────────────────────────┘
+
+---
+
+4. Sidebar
+
+The sidebar is fixed to the left side on desktop.
+
+Recommended width:
+
+- Expanded: approximately 240–280px
+- Collapsed: approximately 60–72px
+
+Top
+
+At the top:
+
+┌─────────────────────────────┐
+│ ◆ Onyx HTML                 │
+│                             │
+│ +  New Workspace            │
+└─────────────────────────────┘
+
+New Workspace button
+
+Large primary button.
+
+Contains:
+
+- Plus icon
+- "New Workspace"
+
+Placement:
+
+- Below brand
+- Full available sidebar width
+- Approximately 40–44px height
+
+---
+
+5. Sidebar Navigation
+
+Group navigation with section labels.
+
+WORKSPACE
+
+▣ Files
+◫ Preview
+⌘ Browser / Test
+▤ Console
+
+
+CHAT
+
+＋ New Chat
+◷ History
+⌕ Search Chats
+
+
+PROJECT
+
+▱ Recent Workspaces
+
+
+SYSTEM
+
+⚙ Settings
+
+Navigation button design
+
+Each item:
+
+- 36–40px height
+- Rounded 8–10px
+- Icon on left
+- Text on right
+- 8–12px horizontal padding
+
+Hover:
+
+- Slight background highlight
+
+Active:
+
+- Stronger background
+- Slightly emphasized text
+- Optional left accent indicator
+
+Do not use excessive gradients.
+
+---
+
+6. Sidebar Bottom Area
+
+At the bottom:
+
+─────────────────────────────
+⚙ Settings
+
+● Connected
+
+If the AI provider is configured, show a small connection indicator.
+
+If not configured:
+
+○ AI not configured
+
+Clicking it opens AI settings.
+
+---
+
+7. Workspace Header
+
+The header sits above the workspace/editor and preview.
+
+Example:
+
+┌────────────────────────────────────────────────────────────┐
+│ ←  My Portfolio       ● Saved      index.html       ⋯      │
+└────────────────────────────────────────────────────────────┘
+
+Left side
+
+- Back/workspace navigation button
+- Workspace name
+
+Center
+
+Optional:
+
+- Current file name
+- Workspace status
+
+Right side
+
+Buttons:
+
+- Save
+- Preview
+- Download
+- More
+
+Button appearance
+
+Icon buttons:
+
+- 32–36px square
+- Rounded 8px
+- Tooltip on hover
+
+Primary actions may use text + icon.
+
+---
+
+8. Workspace Name
+
+Workspace name should be editable.
+
+Clicking the name:
+
+[ My Portfolio                  ]
+
+Press:
+
+- Enter → save
+- Escape → cancel
+
+---
+
+9. Main Workspace Area
+
+The workspace area has two switchable modes:
+
+1. Editor
+2. Preview
+
+The user can switch between them without leaving the workspace.
+
+Desktop can optionally support a split editor/preview layout.
+
+---
+
+10. Workspace Toolbar
+
+Place immediately above the editor/preview.
+
+┌─────────────────────────────────────────────────────────────┐
+│ Code  Preview   │ index.html  style.css  script.js │ ↻ ⋯   │
+└─────────────────────────────────────────────────────────────┘
+
+Left
+
+Segmented control:
+
+[ Code ] [ Preview ]
+
+Active item has a filled/subtle background.
+
+Center
+
+File tabs.
+
+Example:
+
+index.html   style.css   script.js
+
+Active file:
+
+- Stronger text
+- Bottom indicator or highlighted tab
+
+Right
+
+Icon buttons:
+
+- Reload
+- Format
+- More
+
+---
+
+11. File Explorer
+
+The file explorer appears as a collapsible vertical section within the workspace area.
+
+Suggested desktop arrangement:
+
+┌────────────────┬──────────────────────────────────────┐
+│ FILES          │ index.html                           │
+│                │                                      │
+│ ▾ my-website   │ <html>                               │
+│   ▾ assets     │ ...                                  │
+│      logo.png  │                                      │
+│   index.html   │                                      │
+│   style.css    │                                      │
+│   script.js    │                                      │
+└────────────────┴──────────────────────────────────────┘
+
+Recommended width:
+
+- 220–260px
+
+File explorer header
+
+FILES                    +  ⋯
+
+Buttons:
+
+- New file
+- More
+
+"+" opens:
+
+New File
+New Folder
+
+---
+
+12. File Tree
+
+Support:
+
+- Folder expansion
+- Folder collapse
+- File selection
+- Drag-and-drop
+- Context menu
+- Rename
+- Delete
+
+Icons should identify:
+
+- HTML
+- CSS
+- JS
+- JSON
+- Images
+- Folders
+
+Selected file should have a clear background.
+
+---
+
+13. Code Editor
+
+The editor occupies the largest area when Code mode is selected.
+
+Use a professional editor implementation.
+
+Required:
+
+- Syntax highlighting
+- Line numbers
+- Search
+- Replace
+- Code folding
+- Auto indentation
+- Bracket matching
+- Error markers
+- Multiple tabs
+- Cursor position
+- Language detection
+
+Bottom status bar:
+
+Ln 24, Col 8      HTML      UTF-8      Spaces: 2
+
+---
+
+14. Editor Status
+
+Show unsaved state near the file name.
+
+Example:
+
+index.html ●
+
+Where the dot indicates unsaved changes.
+
+Workspace header can show:
+
+● Unsaved
+
+After saving:
+
+✓ Saved
+
+---
+
+15. Preview
+
+Preview mode replaces the editor with a browser-like preview.
+
+Top toolbar:
+
+←  →  ↻    https://preview.local    ⋯
+
+Controls:
+
+- Back
+- Forward
+- Reload
+- URL/display field
+- More
+
+Below it:
+
+[ Desktop ] [ Tablet ] [ Mobile ]      ⛶
+
+The website appears inside the preview viewport.
+
+---
+
+16. Preview Controls
+
+Right side controls:
+
+- Responsive device selector
+- Fullscreen
+- Open preview
+- Inspect
+
+Device selector options:
+
+Desktop
+Tablet
+Mobile
+Custom
+
+---
+
+17. Preview Console
+
+Console should be accessible from:
+
+- Sidebar
+- Preview toolbar
+- Bottom drawer
+
+Bottom drawer:
+
+┌──────────────────────────────────────────┐
+│ Console       Errors  Network      ×     │
+├──────────────────────────────────────────┤
+│ ✓ Page loaded                             │
+│ ⚠ Missing image: logo.png                │
+└──────────────────────────────────────────┘
+
+Use tabs:
+
+- Console
+- Errors
+- Network
+
+---
+
+18. Browser/Test Panel
+
+The Browser/Test panel displays browser automation activity.
+
+Example:
+
+Browser Test
+
+✓ Opened page
+✓ Clicked "Menu"
+✓ Typed "hello"
+✓ Checked DOM
+✓ No console errors
+
+Each action can be expandable.
+
+---
+
+19. AI Chat Panel
+
+The AI chat occupies the entire right side of the desktop workspace.
+
+Recommended width:
+
+- 360–480px
+- User-resizable divider
+
+Add a draggable divider between workspace and chat.
+
+The divider should have a subtle hover indicator.
+
+---
+
+20. Chat Header
+
+┌─────────────────────────────────────┐
+│ AI Assistant                ⋯       │
+│ Model: GPT...                      │
+└─────────────────────────────────────┘
+
+Left:
+
+- AI icon
+- "AI Assistant"
+
+Secondary line:
+
+- Current model
+
+Right:
+
+- New chat
+- Chat options
+
+---
+
+21. Chat Empty State
+
+When no messages exist:
+
+                 ✦
+
+          What should we build?
+
+   Create, edit, test, or fix your website.
+
+┌───────────────────────────────────────┐
+│ Create a responsive portfolio...      │
+│                                       │
+│                                       │
+│                             ⚙   ↑     │
+└───────────────────────────────────────┘
+
+Try:
+[Create landing page]
+[Fix mobile layout]
+[Add dark mode]
+
+Suggestion buttons should be compact secondary buttons.
+
+---
+
+22. User Messages
+
+User messages appear aligned to the right.
+
+Use a compact rounded message container.
+
+Avoid excessive bubble width.
+
+Maximum width:
+
+Approximately 80–85% of chat width.
+
+---
+
+23. Assistant Messages
+
+Assistant messages should use the available chat width.
+
+Support:
+
+- Markdown
+- Code
+- File links
+- Thinking panel
+- Tool cards
+- Error cards
+
+Do not put the entire assistant response inside one giant bordered card.
+
+---
+
+24. Thinking Panel
+
+The Thinking panel is placed at the top of the assistant response whenever reasoning content exists.
+
+┌──────────────────────────────────────┐
+│ 🧠 Thinking                      ▼   │
+└──────────────────────────────────────┘
+
+While streaming:
+
+🧠 Thinking...
+
+Expanded:
+
+┌──────────────────────────────────────┐
+│ 🧠 Thinking                      ▲   │
+├──────────────────────────────────────┤
+│ Analyzing the current layout...      │
+│ Checking the mobile breakpoint...    │
+│ Determining which file to modify...  │
+└──────────────────────────────────────┘
+
+Important implementation rule
+
+Only render provider-supplied "reasoning_content" or equivalent reasoning fields.
+
+Do not invent, reconstruct, or generate a separate hidden reasoning transcript.
+
+---
+
+25. Tool Call Cards
+
+Tool calls appear between reasoning/content segments.
+
+Collapsed:
+
+┌──────────────────────────────────────┐
+│ ✓  Read file                    ›    │
+│    index.html                       │
+└──────────────────────────────────────┘
+
+Expanded:
+
+┌──────────────────────────────────────┐
+│ ✓  Read file                    ▲    │
+│    index.html                       │
+├──────────────────────────────────────┤
+│ Tool       read_file                 │
+│ File       index.html                │
+│ Result     248 lines                 │
+└──────────────────────────────────────┘
+
+States
+
+Running:
+
+◌ Reading file...
+
+Success:
+
+✓ Read file
+
+Error:
+
+! Tool failed
+
+Cancelled:
+
+○ Cancelled
+
+---
+
+26. Tool Card Buttons
+
+Tool cards should support:
+
+- Expand/collapse
+- Copy result
+- Retry failed tool
+- Open referenced file
+- Open console when relevant
+
+Do not expose raw tool JSON by default.
+
+Provide an optional "View details" area for advanced users.
+
+---
+
+27. Chat Prompt Box
+
+The prompt box is fixed to the bottom of the AI panel.
+
+It should be visually prominent.
+
+┌──────────────────────────────────────────┐
+│ Ask AI to edit or test your website...   │
+│                                          │
+│                                          │
+│ 📎   @   Model ▼              ⚙    ↑    │
+└──────────────────────────────────────────┘
+
+Prompt controls
+
+Bottom-left:
+
+- Attachment
+- File/context selector
+
+Bottom-right:
+
+- Model selector
+- Settings
+- Send
+
+While generating:
+
+■ Stop
+
+Replace the send button with Stop.
+
+---
+
+28. Prompt Box Buttons
+
+Attachment button
+
+Opens:
+
+Upload files
+Add workspace file
+
+Context button
+
+Allows:
+
+Current file
+Selected files
+Entire workspace
+
+Model button
+
+Compact dropdown:
+
+GPT-5.6 Luna
+Claude
+Gemini
+Custom
+
+Actual options depend on configured providers.
+
+Send button
+
+Use a strong primary icon button.
+
+- 36–40px
+- Circular or rounded-square
+- Arrow/up icon
+- Disabled when prompt is empty
+
+---
+
+29. Chat Scroll Behavior
+
+The chat must have:
+
+- Smooth scrolling
+- Auto-scroll while the user is at the bottom
+- No forced scrolling when the user manually scrolls upward
+- "Jump to latest" floating button when new content arrives while scrolled away
+
+---
+
+30. Chat History
+
+History opens from the sidebar.
+
+Layout:
+
+Chat History
+────────────────────────
+
+Today
+
+Fix mobile navbar
+Create portfolio
+Landing page redesign
+
+Yesterday
+
+Build pricing page
+Fix JavaScript error
+
+Each row:
+
+- Chat title
+- Relative timestamp
+- More button
+
+More menu:
+
+Rename
+Duplicate
+Delete
+
+---
+
+31. Search Chats
+
+Search button opens a search field.
+
+⌕ Search conversations...
+
+Search should search:
+
+- Titles
+- User messages
+- Assistant content
+
+Do not search huge reasoning/tool payloads by default unless explicitly requested.
+
+---
+
+32. Settings
+
+Settings should open as a dedicated full workspace view or modal depending on screen size.
+
+Categories:
+
+AI Providers
+Appearance
+Editor
+Preview
+General
+Keyboard Shortcuts
+
+Use a left settings navigation and right settings content area on desktop.
+
+---
+
+33. AI Provider Settings
+
+AI Providers
+
+OpenAI Compatible
+──────────────────────────────
+
+Provider Name
+[ My Provider                 ]
+
+Base URL
+[ https://api.example.com/v1  ]
+
+API Key
+[ •••••••••••••••••••         ]
+
+Model
+[ model-name             ▼    ]
+
+[ Test Connection ]
+
+                         [Save]
+
+API key
+
+- Password-style input
+- Show/hide button
+- Never expose in logs
+- Never include in downloaded workspace
+- Never render inside AI messages
+
+API key may be optional.
+
+---
+
+34. Model Selector
+
+When multiple providers exist:
+
+Model
+┌─────────────────────────────┐
+│ Provider A                  │
+│   model-1                   │
+│   model-2                   │
+│                             │
+│ Provider B                  │
+│   model-3                   │
+└─────────────────────────────┘
+
+Allow manual model entry.
+
+---
+
+35. Model Discovery
+
+For OpenAI-compatible APIs:
+
+GET {baseURL}/models
+        ↓
+Normalize response
+        ↓
+Populate model selector
+
+If "/models" is unavailable:
+
+- Do not treat it as a fatal error.
+- Allow manual model entry.
+
+---
+
+36. Connection Testing
+
+Button:
+
+[ ✓ Test Connection ]
+
+Progress:
+
+◌ Testing...
+
+Success:
+
+✓ Connection successful
+✓ Model available
+
+Failure:
+
+✕ Connection failed
+
+HTTP 401
+Check your API key.
+
+[Retry]
+
+---
+
+37. Editor Settings
+
+Controls:
+
+- Font size
+- Tab size
+- Word wrap
+- Minimap
+- Line numbers
+- Auto-save
+- Format on save
+
+Use standard settings controls:
+
+Font Size
+[ 14 ─────●── ]
+
+Word Wrap
+[ On  ]
+
+Minimap
+[ Off ]
+
+---
+
+38. Preview Settings
+
+Controls:
+
+- Default viewport
+- Auto reload
+- Console visibility
+- Error overlay
+- Open links externally
+- Preview refresh behavior
+
+---
+
+39. Appearance
+
+Support:
+
+- Light
+- Dark
+- System
+
+Use a segmented control.
+
+Appearance
+
+[ Light ] [ Dark ] [ System ]
+
+---
+
+40. Download Workspace
+
+The Download button should be visible in the workspace header.
+
+[ ↓ Download ]
+
+Clicking it creates:
+
+my-website.zip
+
+ZIP contents:
+
+my-website/
+├── index.html
+├── style.css
+├── script.js
+├── assets/
+└── data/
+
+Do not include:
+
+- API keys
+- Chat history
+- Internal database data
+- Application credentials
+- Internal tool metadata
+
+---
+
+41. Workspace Context Menu
+
+Right-clicking a file:
+
+Open
+Open in New Tab
+Rename
+Duplicate
+Delete
+Copy Path
+
+Right-clicking a folder:
+
+New File
+New Folder
+Rename
+Delete
+Copy Path
+
+---
+
+42. AI File Editing
+
+When the AI edits a file, visually indicate it.
+
+Example:
+
+index.html  ✦ AI editing
+
+During editing:
+
+- Disable conflicting manual operations where necessary.
+- Show live modification state.
+- Automatically save after successful AI operations.
+
+After completion:
+
+index.html  ✓ AI edited
+
+---
+
+43. AI Workflow Visualization
+
+The AI should visually communicate its workflow without overwhelming the user.
+
+Example:
+
+🧠 Thinking
+   Analyzing the navigation...
+
+✓ Read index.html
+
+✓ Read style.css
+
+🧠 Thinking
+   Found the mobile breakpoint issue...
+
+✓ Edit style.css
+
+✓ Reload preview
+
+✓ Click mobile menu
+
+✓ No console errors
+
+The mobile navigation is fixed.
+
+This creates a clear agent timeline.
+
+---
+
+44. Browser Automation
+
+Browser actions should operate only against the isolated preview.
+
+Tools:
+
+open_page
+reload_page
+click
+type
+press_key
+scroll
+hover
+select
+wait
+
+Inspection:
+
+get_dom
+get_element
+inspect_element
+get_console_logs
+get_page_errors
+get_network_errors
+take_screenshot
+
+Testing:
+
+run_javascript
+run_test
+check_page
+check_console
+check_links
+
+---
+
+45. JavaScript Execution Security
+
+"run_javascript" executes inside the preview context only.
+
+It must not have automatic access to:
+
+- Application API keys
+- Authentication tokens
+- Parent window privileged APIs
+- Internal application state
+- Workspace database
+- Browser storage belonging to the main application
+
+Use isolation such as a sandboxed iframe or equivalent secure preview environment.
+
+---
+
+46. File Tools
+
+AI tools:
+
+list_files
+read_file
+create_file
+write_file
+edit_file
+delete_file
+rename_file
+create_folder
+move_file
+search_files
+replace_content
+
+All file operations must be scoped to the current workspace.
+
+---
+
+47. Workspace Data Model
+
+Conceptually:
+
+Workspace
+├── id
+├── name
+├── files
+├── settings
+├── activeFile
+├── createdAt
+└── updatedAt
+
+Chat
+├── id
+├── workspaceId
+├── title
+├── messages
+├── createdAt
+└── updatedAt
+
+Message
+├── id
+├── role
+├── segments
+└── createdAt
+
+---
+
+48. Message Segment Model
+
+Assistant messages must support structured segments.
+
+segments:
+[
+  {
+    type: "thinking",
+    content: "..."
+  },
+  {
+    type: "tool_call",
+    tool: "read_file",
+    arguments: {}
+  },
+  {
+    type: "tool_result",
+    result: {}
+  },
+  {
+    type: "content",
+    content: "..."
+  }
+]
+
+This prevents reasoning, tools, and final responses from becoming one string.
+
+---
+
+49. Streaming Architecture
+
+Provider stream:
+
+Provider
+   ↓
+Provider Adapter
+   ↓
+Normalized Events
+   ↓
+Stream Parser
+   ↓
+Message Accumulator
+   ↓
+React/UI State
+
+Normalized events:
+
+reasoning_content
+content
+tool_call
+tool_result
+error
+done
+
+The accumulator must update existing segments instead of creating duplicate messages.
+
+---
+
+50. Context Management
+
+Do not send every workspace file to the AI on every request.
+
+Provide:
+
+- Workspace tree
+- Relevant files
+- Active file
+- Selected files
+- User prompt
+- Recent conversation
+- Relevant tool results
+
+Use targeted retrieval for large projects.
+
+---
+
+51. Autosave
+
+Changes should be debounced.
+
+Edit
+ ↓
+Debounce
+ ↓
+Persist
+ ↓
+Saved ✓
+
+Never save every keystroke individually.
+
+---
+
+52. Error Handling
+
+Errors must appear at the correct layer.
+
+AI
+
+AI request failed
+
+Unable to reach the configured provider.
+
+[Retry] [Settings]
+
+Preview
+
+Preview Error
+
+script.js produced a runtime error.
+
+[Open Console]
+
+Tool
+
+Tool Failed
+
+Unable to edit index.html.
+
+[Retry]
+
+Workspace
+
+Save Failed
+
+Your latest changes could not be saved.
+
+[Retry]
+
+---
+
+53. Responsive Mobile Design
+
+On mobile, do not squeeze all panels together.
+
+Use bottom navigation:
+
+┌──────────────────────────────┐
+│ Workspace Header             │
+├──────────────────────────────┤
+│                              │
+│                              │
+│       Current View           │
+│                              │
+│                              │
+├──────────────────────────────┤
+│ Code │ Preview │ AI │ Files │
+└──────────────────────────────┘
+
+Tabs:
+
+- Code
+- Preview
+- AI
+- Files
+
+The AI panel becomes a full-screen experience.
+
+The prompt box remains fixed at the bottom.
+
+---
+
+54. Mobile AI View
+
+┌──────────────────────────────┐
+│ ← AI Assistant        ⋯      │
+├──────────────────────────────┤
+│                              │
+│ 🧠 Thinking                  │
+│                              │
+│ ✓ Read file                  │
+│                              │
+│ Assistant response...        │
+│                              │
+├──────────────────────────────┤
+│ Prompt                       │
+│                              │
+│ 📎       Model       ↑       │
+└──────────────────────────────┘
+
+---
+
+55. Keyboard Shortcuts
+
+Support:
+
+Ctrl/Cmd + S
+Save
+
+Ctrl/Cmd + P
+Quick file search
+
+Ctrl/Cmd + K
+Focus AI prompt
+
+Ctrl/Cmd + Shift + P
+Command palette
+
+Ctrl/Cmd + B
+Toggle sidebar
+
+Ctrl/Cmd + Enter
+Send prompt
+
+Escape
+Close modal/panel
+
+---
+
+56. Command Palette
+
+Keyboard shortcut:
+
+"Ctrl/Cmd + Shift + P"
+
+UI:
+
+┌──────────────────────────────────────┐
+│ ⌕ Search commands...                 │
+├──────────────────────────────────────┤
+│ New File                             │
+│ New Folder                           │
+│ Save                                 │
+│ Download Workspace                   │
+│ Open Preview                         │
+│ Reload Preview                       │
+│ New Chat                             │
+│ Search Files                         │
+│ Run JavaScript                       │
+│ Toggle Sidebar                       │
+│ Open Settings                        │
+└──────────────────────────────────────┘
+
+---
+
+57. Button System
+
+All buttons should follow a consistent design system.
+
+Primary
+
+Used for:
+
+- Send
+- New Workspace
+- Save
+- Test Connection
+
+Characteristics:
+
+- Strong visual emphasis
+- 36–44px height
+- Rounded 8–10px
+- Icon + label where useful
+
+Secondary
+
+Used for:
+
+- Preview
+- Download
+- Add file
+- Settings
+
+Characteristics:
+
+- Subtle background
+- Visible border
+
+Ghost
+
+Used for:
+
+- Sidebar navigation
+- Toolbar actions
+- Minor actions
+
+Characteristics:
+
+- Transparent background
+- Hover background
+
+Destructive
+
+Used for:
+
+- Delete
+- Remove provider
+- Delete workspace
+
+Must clearly communicate destructive behavior.
+
+---
+
+58. Icon Buttons
+
+Icon-only controls should be approximately 32–36px.
+
+Every icon-only button must have:
+
+- Tooltip
+- Accessible label
+- Hover state
+- Keyboard focus state
+
+Examples:
+
++    New
+⋯    More
+↻    Reload
+↓    Download
+×    Close
+⚙    Settings
+
+---
+
+59. Modals
+
+Use modals for:
+
+- Delete confirmation
+- Rename workspace
+- Provider configuration when appropriate
+- Import workspace
+- Dangerous actions
+
+Example:
+
+┌────────────────────────────────────┐
+│ Delete workspace?                  │
+│                                    │
+│ This cannot be undone.             │
+│                                    │
+│            Cancel   Delete         │
+└────────────────────────────────────┘
+
+Destructive button is placed on the right.
+
+---
+
+60. Toast Notifications
+
+Use short notifications for:
+
+- Saved
+- Download started
+- File created
+- Workspace deleted
+- Provider saved
+- Connection successful
+
+Example:
+
+✓ Workspace downloaded
+
+Toasts should not be used for important errors that require user action.
+
+---
+
+61. Loading States
+
+Never leave blank panels during loading.
+
+Use:
+
+- Skeletons
+- Spinners
+- Progress indicators
+
+Example:
+
+◌ Loading workspace...
+
+---
+
+62. Empty States
+
+Every major empty area should have an intentional empty state.
+
+Examples:
+
+Files
+
+No files yet
+
+Create your first HTML file.
+
+[ + New File ]
+
+Chats
+
+No conversations yet
+
+[ + New Chat ]
+
+Console
+
+No console messages
+
+---
+
+63. Workspace Creation
+
+Clicking "New Workspace" opens:
+
+Create Workspace
+
+Name
+[ My Website ]
+
+Start with
+
+[ Blank ]
+[ Landing Page ]
+[ Portfolio ]
+[ Documentation ]
+[ Custom ]
+
+                 [Create]
+
+AI can immediately begin building after creation.
+
+---
+
+64. Home Screen
+
+Before opening a workspace:
+
+                 ✦
+           AI HTML Workspace
+
+       What do you want to build?
+
+┌───────────────────────────────────────────┐
+│ Create a modern SaaS landing page...      │
+│                                           │
+│                                           │
+│                                ⚙      ↑   │
+└───────────────────────────────────────────┘
+
+[ Blank Workspace ]  [ Recent Workspaces ]
+
+Recent
+──────────────────────────────
+Portfolio Website
+Landing Page
+Dashboard UI
+
+---
+
+65. Workspace Import
+
+Support importing a ZIP project.
+
+Flow:
+
+Upload ZIP
+   ↓
+Validate archive
+   ↓
+Extract workspace
+   ↓
+Build file tree
+   ↓
+Open project
+
+Reject unsafe paths and unsupported archive structures.
+
+---
+
+66. Workspace Export
+
+Export must preserve:
+
+- File names
+- Folder structure
+- File contents
+- Binary assets
+
+It must not include application secrets.
+
+---
+
+67. Security Requirements
+
+All AI tools must validate:
+
+- Workspace ID
+- File path
+- Tool arguments
+- Permissions
+- Preview origin
+
+Prevent:
+
+../
+../../
+absolute host paths
+
+Preview JavaScript must remain isolated from application privileges.
+
+API keys must never enter:
+
+- Chat history
+- Tool results
+- Logs
+- ZIP exports
+- Preview environment
+
+---
+
+68. Performance Requirements
+
+The application should remain responsive with:
+
+- Large HTML files
+- Multiple files
+- Long chat histories
+- Long tool-call sequences
+- Streaming AI responses
+
+Use:
+
+- Debounced persistence
+- Virtualized long chat lists when necessary
+- Incremental streaming updates
+- Targeted file context
+- Lazy-loaded settings/tool panels
+- Efficient editor rendering
+
+---
+
+69. MVP
+
+Required
+
+- Modern responsive application shell
+- Sidebar
+- Workspace management
+- Multi-file file explorer
+- HTML/CSS/JS editor
+- File tabs
+- Live preview
+- Preview controls
+- Console
+- Browser testing
+- AI chat
+- Streaming
+- Thinking panel
+- Collapsible tool cards
+- File tools
+- Browser tools
+- JavaScript execution
+- Chat history
+- Workspace persistence
+- ZIP download
+- ZIP import
+- OpenAI-compatible provider
+- Optional API key
+- Model selection
+- Model discovery
+- Connection testing
+- Settings
+- Dark/light/system appearance
+- Mobile layout
+- Command palette
+- Keyboard shortcuts
+
+---
+
+70. Phase 2
+
+Potential additions:
+
+- Screenshot visual testing
+- Visual regression testing
+- Git integration
+- GitHub import/export
+- Collaborative editing
+- Automated test generation
+- Custom AI tools
+- Project templates
+- AI visual design mode
+- Website deployment
+- Multi-agent workflows
+
+---
+
+71. Final Acceptance Criteria
+
+The application is complete when:
+
+Workspace
+
+- Users can create workspaces.
+- Users can import ZIP projects.
+- Users can download complete workspaces.
+- Multiple files and folders work correctly.
+- Workspace state survives refreshes.
+
+Editor
+
+- HTML/CSS/JS editing works.
+- Multiple tabs work.
+- File explorer works.
+- Unsaved state is visible.
+- Autosave works.
+- Errors are visible.
+
+Preview
+
+- Websites render correctly.
+- Relative files work.
+- Assets work.
+- Responsive viewport controls work.
+- Reload works.
+- Console/errors/network inspection work.
+
+AI
+
+- AI can inspect workspace files.
+- AI can modify files.
+- AI can create/delete/rename files.
+- AI can execute JavaScript in the preview.
+- AI can click/type/scroll/interact with the website.
+- AI can inspect DOM and errors.
+- AI can test and fix issues iteratively.
+
+Reasoning
+
+- "reasoning_content" is parsed separately.
+- Reasoning is displayed only inside the Thinking panel.
+- Thinking streams correctly.
+- Thinking is collapsible.
+- Thinking collapses after completion.
+- Empty reasoning does not create an empty panel.
+- Reasoning is not mixed with normal content.
+- Reasoning does not contain tool cards.
+- Multiple reasoning segments are handled correctly.
+- Provider-specific reasoning fields are normalized.
+
+Tool calls
+
+- Tool calls appear as compact cards.
+- Cards support running/success/error/cancelled states.
+- Cards can expand/collapse.
+- Tool results do not appear as raw JSON by default.
+- Existing cards update during streaming.
+- Tool cards remain separate from Thinking.
+
+Chat
+
+- Chat history persists.
+- Messages survive refreshes.
+- Streaming works.
+- Stop generation works.
+- Retry works.
+- Regeneration works.
+- Search works.
+- Prompt box remains accessible.
+
+Providers
+
+- OpenAI-compatible Base URL works.
+- API key is optional.
+- Manual model entry works.
+- "/models" discovery works when available.
+- Connection testing works.
+- API keys are never exposed.
+
+UI
+
+- Every major action has a clear button.
+- Icon-only buttons have tooltips.
+- Primary/secondary/ghost/destructive buttons are visually distinct.
+- Controls remain consistent across the application.
+- Desktop uses the dual-panel workspace.
+- Mobile uses Code/Preview/AI/Files navigation.
+- Dark/light/system appearance works.
+- Empty/loading/error states are implemented.
+- No major panel feels visually overcrowded.
+
+The final product should feel like a focused AI-native web development environment: the user describes what they want, the AI can inspect and modify the complete project, interact with the running website, test its behavior, show its available reasoning in a collapsible Thinking panel, expose its tool activity through compact cards, and leave the user with a downloadable, functioning static website.

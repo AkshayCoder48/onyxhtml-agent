@@ -1,0 +1,1928 @@
+     1→PRD — AI HTML Workspace Editor
+     2→
+     3→1. Product Overview
+     4→
+     5→Build a polished browser-based AI HTML Workspace Editor for creating, editing, previewing, testing, and downloading multi-file static websites through an AI coding agent.
+     6→
+     7→The product combines:
+     8→
+     9→- AI coding agent
+    10→- Multi-file HTML/CSS/JS editor
+    11→- Live website preview
+    12→- Browser automation/testing
+    13→- Console and error inspection
+    14→- AI reasoning/thinking panel
+    15→- Collapsible tool-call cards
+    16→- Chat history
+    17→- Workspace management
+    18→- OpenAI-compatible API configuration
+    19→- ZIP workspace export
+    20→
+    21→The application should feel like a modern developer tool rather than a basic HTML playground.
+    22→
+    23→The primary desktop experience uses a three-zone layout:
+    24→
+    25→┌──────────────────────────────────────────────────────────────────────────┐
+    26→│ Sidebar │                 Workspace Header                               │
+    27→│         ├────────────────────────────────────┬───────────────────────────┤
+    28→│         │                                    │                           │
+    29→│         │       Editor / Preview Area        │        AI Chat             │
+    30→│         │                                    │                           │
+    31→│         │                                    │                           │
+    32→│         │                                    │                           │
+    33→│         │                                    │                           │
+    34→│         ├────────────────────────────────────┤                           │
+    35→│         │ Editor / Preview Controls          │        Prompt Box          │
+    36→└─────────┴────────────────────────────────────┴───────────────────────────┘
+    37→
+    38→The interface must have clear visual hierarchy and avoid overcrowding.
+    39→
+    40→---
+    41→
+    42→2. Design Direction
+    43→
+    44→Visual style
+    45→
+    46→Use a modern developer-tool aesthetic:
+    47→
+    48→- Rounded cards
+    49→- Subtle borders
+    50→- Moderate corner radius
+    51→- Clean typography
+    52→- Compact controls
+    53→- Smooth transitions
+    54→- Minimal shadows
+    55→- Strong spacing hierarchy
+    56→- Dark and light appearance support
+    57→- Responsive behavior
+    58→- Keyboard accessibility
+    59→
+    60→Do not make every element look like a floating card. Panels should primarily use borders and background separation.
+    61→
+    62→Component hierarchy
+    63→
+    64→Use three visual levels:
+    65→
+    66→Level 1 — Application surfaces
+    67→
+    68→Large areas such as:
+    69→
+    70→- Sidebar
+    71→- Editor
+    72→- Preview
+    73→- Chat
+    74→
+    75→Use subtle background differences and borders.
+    76→
+    77→Level 2 — Interactive containers
+    78→
+    79→Examples:
+    80→
+    81→- File explorer
+    82→- Chat messages
+    83→- Thinking panel
+    84→- Tool cards
+    85→- Prompt box
+    86→- Settings sections
+    87→
+    88→Use rounded corners and subtle borders.
+    89→
+    90→Level 3 — Controls
+    91→
+    92→Examples:
+    93→
+    94→- Buttons
+    95→- Tabs
+    96→- Dropdowns
+    97→- Icon buttons
+    98→- Toggles
+    99→
+   100→Keep these compact.
+   101→
+   102→---
+   103→
+   104→3. Application Shell
+   105→
+   106→Desktop layout:
+   107→
+   108→┌──────────────┬─────────────────────────────────────────────────────────┐
+   109→│              │ Workspace Header                                        │
+   110→│              ├──────────────────────────────┬──────────────────────────┤
+   111→│   Sidebar    │                              │                          │
+   112→│              │     Workspace Area           │       AI Chat             │
+   113→│              │                              │                          │
+   114→│              │                              │                          │
+   115→│              │                              │                          │
+   116→│              │                              │                          │
+   117→│              │                              │                          │
+   118→│              │                              │                          │
+   119→│              │                              │                          │
+   120→│              │                              │                          │
+   121→│              │                              │                          │
+   122→│              │                              │                          │
+   123→│              │                              │                          │
+   124→│              │                              │                          │
+   125→│              │                              │                          │
+   126→│              │                              │                          │
+   127→│              │                              │                          │
+   128→│              │                              │                          │
+   129→│              │                              │                          │
+   130→│              │                              │                          │
+   131→│              │                              │                          │
+   132→│              │                              │                          │
+   133→│              │                              │                          │
+   134→│              │                              │                          │
+   135→│              │                              │                          │
+   136→│              │                              │                          │
+   137→│              │                              │                          │
+   138→│              │                              │                          │
+   139→│              ├──────────────────────────────┤                          │
+   140→│              │ Editor / Preview Toolbar     │                          │
+   141→│              │                              │                          │
+   142→│              │                              │                          │
+   143→│              │                              │                          │
+   144→│              │                              │                          │
+   145→│              │                              ├──────────────────────────┤
+   146→│              │                              │       Prompt Box         │
+   147→└──────────────┴──────────────────────────────┴──────────────────────────┘
+   148→
+   149→---
+   150→
+   151→4. Sidebar
+   152→
+   153→The sidebar is fixed to the left side on desktop.
+   154→
+   155→Recommended width:
+   156→
+   157→- Expanded: approximately 240–280px
+   158→- Collapsed: approximately 60–72px
+   159→
+   160→Top
+   161→
+   162→At the top:
+   163→
+   164→┌─────────────────────────────┐
+   165→│ ◆ Onyx HTML                 │
+   166→│                             │
+   167→│ +  New Workspace            │
+   168→└─────────────────────────────┘
+   169→
+   170→New Workspace button
+   171→
+   172→Large primary button.
+   173→
+   174→Contains:
+   175→
+   176→- Plus icon
+   177→- "New Workspace"
+   178→
+   179→Placement:
+   180→
+   181→- Below brand
+   182→- Full available sidebar width
+   183→- Approximately 40–44px height
+   184→
+   185→---
+   186→
+   187→5. Sidebar Navigation
+   188→
+   189→Group navigation with section labels.
+   190→
+   191→WORKSPACE
+   192→
+   193→▣ Files
+   194→◫ Preview
+   195→⌘ Browser / Test
+   196→▤ Console
+   197→
+   198→
+   199→CHAT
+   200→
+   201→＋ New Chat
+   202→◷ History
+   203→⌕ Search Chats
+   204→
+   205→
+   206→PROJECT
+   207→
+   208→▱ Recent Workspaces
+   209→
+   210→
+   211→SYSTEM
+   212→
+   213→⚙ Settings
+   214→
+   215→Navigation button design
+   216→
+   217→Each item:
+   218→
+   219→- 36–40px height
+   220→- Rounded 8–10px
+   221→- Icon on left
+   222→- Text on right
+   223→- 8–12px horizontal padding
+   224→
+   225→Hover:
+   226→
+   227→- Slight background highlight
+   228→
+   229→Active:
+   230→
+   231→- Stronger background
+   232→- Slightly emphasized text
+   233→- Optional left accent indicator
+   234→
+   235→Do not use excessive gradients.
+   236→
+   237→---
+   238→
+   239→6. Sidebar Bottom Area
+   240→
+   241→At the bottom:
+   242→
+   243→─────────────────────────────
+   244→⚙ Settings
+   245→
+   246→● Connected
+   247→
+   248→If the AI provider is configured, show a small connection indicator.
+   249→
+   250→If not configured:
+   251→
+   252→○ AI not configured
+   253→
+   254→Clicking it opens AI settings.
+   255→
+   256→---
+   257→
+   258→7. Workspace Header
+   259→
+   260→The header sits above the workspace/editor and preview.
+   261→
+   262→Example:
+   263→
+   264→┌────────────────────────────────────────────────────────────┐
+   265→│ ←  My Portfolio       ● Saved      index.html       ⋯      │
+   266→└────────────────────────────────────────────────────────────┘
+   267→
+   268→Left side
+   269→
+   270→- Back/workspace navigation button
+   271→- Workspace name
+   272→
+   273→Center
+   274→
+   275→Optional:
+   276→
+   277→- Current file name
+   278→- Workspace status
+   279→
+   280→Right side
+   281→
+   282→Buttons:
+   283→
+   284→- Save
+   285→- Preview
+   286→- Download
+   287→- More
+   288→
+   289→Button appearance
+   290→
+   291→Icon buttons:
+   292→
+   293→- 32–36px square
+   294→- Rounded 8px
+   295→- Tooltip on hover
+   296→
+   297→Primary actions may use text + icon.
+   298→
+   299→---
+   300→
+   301→8. Workspace Name
+   302→
+   303→Workspace name should be editable.
+   304→
+   305→Clicking the name:
+   306→
+   307→[ My Portfolio                  ]
+   308→
+   309→Press:
+   310→
+   311→- Enter → save
+   312→- Escape → cancel
+   313→
+   314→---
+   315→
+   316→9. Main Workspace Area
+   317→
+   318→The workspace area has two switchable modes:
+   319→
+   320→1. Editor
+   321→2. Preview
+   322→
+   323→The user can switch between them without leaving the workspace.
+   324→
+   325→Desktop can optionally support a split editor/preview layout.
+   326→
+   327→---
+   328→
+   329→10. Workspace Toolbar
+   330→
+   331→Place immediately above the editor/preview.
+   332→
+   333→┌─────────────────────────────────────────────────────────────┐
+   334→│ Code  Preview   │ index.html  style.css  script.js │ ↻ ⋯   │
+   335→└─────────────────────────────────────────────────────────────┘
+   336→
+   337→Left
+   338→
+   339→Segmented control:
+   340→
+   341→[ Code ] [ Preview ]
+   342→
+   343→Active item has a filled/subtle background.
+   344→
+   345→Center
+   346→
+   347→File tabs.
+   348→
+   349→Example:
+   350→
+   351→index.html   style.css   script.js
+   352→
+   353→Active file:
+   354→
+   355→- Stronger text
+   356→- Bottom indicator or highlighted tab
+   357→
+   358→Right
+   359→
+   360→Icon buttons:
+   361→
+   362→- Reload
+   363→- Format
+   364→- More
+   365→
+   366→---
+   367→
+   368→11. File Explorer
+   369→
+   370→The file explorer appears as a collapsible vertical section within the workspace area.
+   371→
+   372→Suggested desktop arrangement:
+   373→
+   374→┌────────────────┬──────────────────────────────────────┐
+   375→│ FILES          │ index.html                           │
+   376→│                │                                      │
+   377→│ ▾ my-website   │ <html>                               │
+   378→│   ▾ assets     │ ...                                  │
+   379→│      logo.png  │                                      │
+   380→│   index.html   │                                      │
+   381→│   style.css    │                                      │
+   382→│   script.js    │                                      │
+   383→└────────────────┴──────────────────────────────────────┘
+   384→
+   385→Recommended width:
+   386→
+   387→- 220–260px
+   388→
+   389→File explorer header
+   390→
+   391→FILES                    +  ⋯
+   392→
+   393→Buttons:
+   394→
+   395→- New file
+   396→- More
+   397→
+   398→"+" opens:
+   399→
+   400→New File
+   401→New Folder
+   402→
+   403→---
+   404→
+   405→12. File Tree
+   406→
+   407→Support:
+   408→
+   409→- Folder expansion
+   410→- Folder collapse
+   411→- File selection
+   412→- Drag-and-drop
+   413→- Context menu
+   414→- Rename
+   415→- Delete
+   416→
+   417→Icons should identify:
+   418→
+   419→- HTML
+   420→- CSS
+   421→- JS
+   422→- JSON
+   423→- Images
+   424→- Folders
+   425→
+   426→Selected file should have a clear background.
+   427→
+   428→---
+   429→
+   430→13. Code Editor
+   431→
+   432→The editor occupies the largest area when Code mode is selected.
+   433→
+   434→Use a professional editor implementation.
+   435→
+   436→Required:
+   437→
+   438→- Syntax highlighting
+   439→- Line numbers
+   440→- Search
+   441→- Replace
+   442→- Code folding
+   443→- Auto indentation
+   444→- Bracket matching
+   445→- Error markers
+   446→- Multiple tabs
+   447→- Cursor position
+   448→- Language detection
+   449→
+   450→Bottom status bar:
+   451→
+   452→Ln 24, Col 8      HTML      UTF-8      Spaces: 2
+   453→
+   454→---
+   455→
+   456→14. Editor Status
+   457→
+   458→Show unsaved state near the file name.
+   459→
+   460→Example:
+   461→
+   462→index.html ●
+   463→
+   464→Where the dot indicates unsaved changes.
+   465→
+   466→Workspace header can show:
+   467→
+   468→● Unsaved
+   469→
+   470→After saving:
+   471→
+   472→✓ Saved
+   473→
+   474→---
+   475→
+   476→15. Preview
+   477→
+   478→Preview mode replaces the editor with a browser-like preview.
+   479→
+   480→Top toolbar:
+   481→
+   482→←  →  ↻    https://preview.local    ⋯
+   483→
+   484→Controls:
+   485→
+   486→- Back
+   487→- Forward
+   488→- Reload
+   489→- URL/display field
+   490→- More
+   491→
+   492→Below it:
+   493→
+   494→[ Desktop ] [ Tablet ] [ Mobile ]      ⛶
+   495→
+   496→The website appears inside the preview viewport.
+   497→
+   498→---
+   499→
+   500→16. Preview Controls
+   501→
+   502→Right side controls:
+   503→
+   504→- Responsive device selector
+   505→- Fullscreen
+   506→- Open preview
+   507→- Inspect
+   508→
+   509→Device selector options:
+   510→
+   511→Desktop
+   512→Tablet
+   513→Mobile
+   514→Custom
+   515→
+   516→---
+   517→
+   518→17. Preview Console
+   519→
+   520→Console should be accessible from:
+   521→
+   522→- Sidebar
+   523→- Preview toolbar
+   524→- Bottom drawer
+   525→
+   526→Bottom drawer:
+   527→
+   528→┌──────────────────────────────────────────┐
+   529→│ Console       Errors  Network      ×     │
+   530→├──────────────────────────────────────────┤
+   531→│ ✓ Page loaded                             │
+   532→│ ⚠ Missing image: logo.png                │
+   533→└──────────────────────────────────────────┘
+   534→
+   535→Use tabs:
+   536→
+   537→- Console
+   538→- Errors
+   539→- Network
+   540→
+   541→---
+   542→
+   543→18. Browser/Test Panel
+   544→
+   545→The Browser/Test panel displays browser automation activity.
+   546→
+   547→Example:
+   548→
+   549→Browser Test
+   550→
+   551→✓ Opened page
+   552→✓ Clicked "Menu"
+   553→✓ Typed "hello"
+   554→✓ Checked DOM
+   555→✓ No console errors
+   556→
+   557→Each action can be expandable.
+   558→
+   559→---
+   560→
+   561→19. AI Chat Panel
+   562→
+   563→The AI chat occupies the entire right side of the desktop workspace.
+   564→
+   565→Recommended width:
+   566→
+   567→- 360–480px
+   568→- User-resizable divider
+   569→
+   570→Add a draggable divider between workspace and chat.
+   571→
+   572→The divider should have a subtle hover indicator.
+   573→
+   574→---
+   575→
+   576→20. Chat Header
+   577→
+   578→┌─────────────────────────────────────┐
+   579→│ AI Assistant                ⋯       │
+   580→│ Model: GPT...                      │
+   581→└─────────────────────────────────────┘
+   582→
+   583→Left:
+   584→
+   585→- AI icon
+   586→- "AI Assistant"
+   587→
+   588→Secondary line:
+   589→
+   590→- Current model
+   591→
+   592→Right:
+   593→
+   594→- New chat
+   595→- Chat options
+   596→
+   597→---
+   598→
+   599→21. Chat Empty State
+   600→
+   601→When no messages exist:
+   602→
+   603→                 ✦
+   604→
+   605→          What should we build?
+   606→
+   607→   Create, edit, test, or fix your website.
+   608→
+   609→┌───────────────────────────────────────┐
+   610→│ Create a responsive portfolio...      │
+   611→│                                       │
+   612→│                                       │
+   613→│                             ⚙   ↑     │
+   614→└───────────────────────────────────────┘
+   615→
+   616→Try:
+   617→[Create landing page]
+   618→[Fix mobile layout]
+   619→[Add dark mode]
+   620→
+   621→Suggestion buttons should be compact secondary buttons.
+   622→
+   623→---
+   624→
+   625→22. User Messages
+   626→
+   627→User messages appear aligned to the right.
+   628→
+   629→Use a compact rounded message container.
+   630→
+   631→Avoid excessive bubble width.
+   632→
+   633→Maximum width:
+   634→
+   635→Approximately 80–85% of chat width.
+   636→
+   637→---
+   638→
+   639→23. Assistant Messages
+   640→
+   641→Assistant messages should use the available chat width.
+   642→
+   643→Support:
+   644→
+   645→- Markdown
+   646→- Code
+   647→- File links
+   648→- Thinking panel
+   649→- Tool cards
+   650→- Error cards
+   651→
+   652→Do not put the entire assistant response inside one giant bordered card.
+   653→
+   654→---
+   655→
+   656→24. Thinking Panel
+   657→
+   658→The Thinking panel is placed at the top of the assistant response whenever reasoning content exists.
+   659→
+   660→┌──────────────────────────────────────┐
+   661→│ 🧠 Thinking                      ▼   │
+   662→└──────────────────────────────────────┘
+   663→
+   664→While streaming:
+   665→
+   666→🧠 Thinking...
+   667→
+   668→Expanded:
+   669→
+   670→┌──────────────────────────────────────┐
+   671→│ 🧠 Thinking                      ▲   │
+   672→├──────────────────────────────────────┤
+   673→│ Analyzing the current layout...      │
+   674→│ Checking the mobile breakpoint...    │
+   675→│ Determining which file to modify...  │
+   676→└──────────────────────────────────────┘
+   677→
+   678→Important implementation rule
+   679→
+   680→Only render provider-supplied "reasoning_content" or equivalent reasoning fields.
+   681→
+   682→Do not invent, reconstruct, or generate a separate hidden reasoning transcript.
+   683→
+   684→---
+   685→
+   686→25. Tool Call Cards
+   687→
+   688→Tool calls appear between reasoning/content segments.
+   689→
+   690→Collapsed:
+   691→
+   692→┌──────────────────────────────────────┐
+   693→│ ✓  Read file                    ›    │
+   694→│    index.html                       │
+   695→└──────────────────────────────────────┘
+   696→
+   697→Expanded:
+   698→
+   699→┌──────────────────────────────────────┐
+   700→│ ✓  Read file                    ▲    │
+   701→│    index.html                       │
+   702→├──────────────────────────────────────┤
+   703→│ Tool       read_file                 │
+   704→│ File       index.html                │
+   705→│ Result     248 lines                 │
+   706→└──────────────────────────────────────┘
+   707→
+   708→States
+   709→
+   710→Running:
+   711→
+   712→◌ Reading file...
+   713→
+   714→Success:
+   715→
+   716→✓ Read file
+   717→
+   718→Error:
+   719→
+   720→! Tool failed
+   721→
+   722→Cancelled:
+   723→
+   724→○ Cancelled
+   725→
+   726→---
+   727→
+   728→26. Tool Card Buttons
+   729→
+   730→Tool cards should support:
+   731→
+   732→- Expand/collapse
+   733→- Copy result
+   734→- Retry failed tool
+   735→- Open referenced file
+   736→- Open console when relevant
+   737→
+   738→Do not expose raw tool JSON by default.
+   739→
+   740→Provide an optional "View details" area for advanced users.
+   741→
+   742→---
+   743→
+   744→27. Chat Prompt Box
+   745→
+   746→The prompt box is fixed to the bottom of the AI panel.
+   747→
+   748→It should be visually prominent.
+   749→
+   750→┌──────────────────────────────────────────┐
+   751→│ Ask AI to edit or test your website...   │
+   752→│                                          │
+   753→│                                          │
+   754→│ 📎   @   Model ▼              ⚙    ↑    │
+   755→└──────────────────────────────────────────┘
+   756→
+   757→Prompt controls
+   758→
+   759→Bottom-left:
+   760→
+   761→- Attachment
+   762→- File/context selector
+   763→
+   764→Bottom-right:
+   765→
+   766→- Model selector
+   767→- Settings
+   768→- Send
+   769→
+   770→While generating:
+   771→
+   772→■ Stop
+   773→
+   774→Replace the send button with Stop.
+   775→
+   776→---
+   777→
+   778→28. Prompt Box Buttons
+   779→
+   780→Attachment button
+   781→
+   782→Opens:
+   783→
+   784→Upload files
+   785→Add workspace file
+   786→
+   787→Context button
+   788→
+   789→Allows:
+   790→
+   791→Current file
+   792→Selected files
+   793→Entire workspace
+   794→
+   795→Model button
+   796→
+   797→Compact dropdown:
+   798→
+   799→GPT-5.6 Luna
+   800→Claude
+   801→Gemini
+   802→Custom
+   803→
+   804→Actual options depend on configured providers.
+   805→
+   806→Send button
+   807→
+   808→Use a strong primary icon button.
+   809→
+   810→- 36–40px
+   811→- Circular or rounded-square
+   812→- Arrow/up icon
+   813→- Disabled when prompt is empty
+   814→
+   815→---
+   816→
+   817→29. Chat Scroll Behavior
+   818→
+   819→The chat must have:
+   820→
+   821→- Smooth scrolling
+   822→- Auto-scroll while the user is at the bottom
+   823→- No forced scrolling when the user manually scrolls upward
+   824→- "Jump to latest" floating button when new content arrives while scrolled away
+   825→
+   826→---
+   827→
+   828→30. Chat History
+   829→
+   830→History opens from the sidebar.
+   831→
+   832→Layout:
+   833→
+   834→Chat History
+   835→────────────────────────
+   836→
+   837→Today
+   838→
+   839→Fix mobile navbar
+   840→Create portfolio
+   841→Landing page redesign
+   842→
+   843→Yesterday
+   844→
+   845→Build pricing page
+   846→Fix JavaScript error
+   847→
+   848→Each row:
+   849→
+   850→- Chat title
+   851→- Relative timestamp
+   852→- More button
+   853→
+   854→More menu:
+   855→
+   856→Rename
+   857→Duplicate
+   858→Delete
+   859→
+   860→---
+   861→
+   862→31. Search Chats
+   863→
+   864→Search button opens a search field.
+   865→
+   866→⌕ Search conversations...
+   867→
+   868→Search should search:
+   869→
+   870→- Titles
+   871→- User messages
+   872→- Assistant content
+   873→
+   874→Do not search huge reasoning/tool payloads by default unless explicitly requested.
+   875→
+   876→---
+   877→
+   878→32. Settings
+   879→
+   880→Settings should open as a dedicated full workspace view or modal depending on screen size.
+   881→
+   882→Categories:
+   883→
+   884→AI Providers
+   885→Appearance
+   886→Editor
+   887→Preview
+   888→General
+   889→Keyboard Shortcuts
+   890→
+   891→Use a left settings navigation and right settings content area on desktop.
+   892→
+   893→---
+   894→
+   895→33. AI Provider Settings
+   896→
+   897→AI Providers
+   898→
+   899→OpenAI Compatible
+   900→──────────────────────────────
+   901→
+   902→Provider Name
+   903→[ My Provider                 ]
+   904→
+   905→Base URL
+   906→[ https://api.example.com/v1  ]
+   907→
+   908→API Key
+   909→[ •••••••••••••••••••         ]
+   910→
+   911→Model
+   912→[ model-name             ▼    ]
+   913→
+   914→[ Test Connection ]
+   915→
+   916→                         [Save]
+   917→
+   918→API key
+   919→
+   920→- Password-style input
+   921→- Show/hide button
+   922→- Never expose in logs
+   923→- Never include in downloaded workspace
+   924→- Never render inside AI messages
+   925→
+   926→API key may be optional.
+   927→
+   928→---
+   929→
+   930→34. Model Selector
+   931→
+   932→When multiple providers exist:
+   933→
+   934→Model
+   935→┌─────────────────────────────┐
+   936→│ Provider A                  │
+   937→│   model-1                   │
+   938→│   model-2                   │
+   939→│                             │
+   940→│ Provider B                  │
+   941→│   model-3                   │
+   942→└─────────────────────────────┘
+   943→
+   944→Allow manual model entry.
+   945→
+   946→---
+   947→
+   948→35. Model Discovery
+   949→
+   950→For OpenAI-compatible APIs:
+   951→
+   952→GET {baseURL}/models
+   953→        ↓
+   954→Normalize response
+   955→        ↓
+   956→Populate model selector
+   957→
+   958→If "/models" is unavailable:
+   959→
+   960→- Do not treat it as a fatal error.
+   961→- Allow manual model entry.
+   962→
+   963→---
+   964→
+   965→36. Connection Testing
+   966→
+   967→Button:
+   968→
+   969→[ ✓ Test Connection ]
+   970→
+   971→Progress:
+   972→
+   973→◌ Testing...
+   974→
+   975→Success:
+   976→
+   977→✓ Connection successful
+   978→✓ Model available
+   979→
+   980→Failure:
+   981→
+   982→✕ Connection failed
+   983→
+   984→HTTP 401
+   985→Check your API key.
+   986→
+   987→[Retry]
+   988→
+   989→---
+   990→
+   991→37. Editor Settings
+   992→
+   993→Controls:
+   994→
+   995→- Font size
+   996→- Tab size
+   997→- Word wrap
+   998→- Minimap
+   999→- Line numbers
+  1000→- Auto-save
+  1001→- Format on save
+  1002→
+  1003→Use standard settings controls:
+  1004→
+  1005→Font Size
+  1006→[ 14 ─────●── ]
+  1007→
+  1008→Word Wrap
+  1009→[ On  ]
+  1010→
+  1011→Minimap
+  1012→[ Off ]
+  1013→
+  1014→---
+  1015→
+  1016→38. Preview Settings
+  1017→
+  1018→Controls:
+  1019→
+  1020→- Default viewport
+  1021→- Auto reload
+  1022→- Console visibility
+  1023→- Error overlay
+  1024→- Open links externally
+  1025→- Preview refresh behavior
+  1026→
+  1027→---
+  1028→
+  1029→39. Appearance
+  1030→
+  1031→Support:
+  1032→
+  1033→- Light
+  1034→- Dark
+  1035→- System
+  1036→
+  1037→Use a segmented control.
+  1038→
+  1039→Appearance
+  1040→
+  1041→[ Light ] [ Dark ] [ System ]
+  1042→
+  1043→---
+  1044→
+  1045→40. Download Workspace
+  1046→
+  1047→The Download button should be visible in the workspace header.
+  1048→
+  1049→[ ↓ Download ]
+  1050→
+  1051→Clicking it creates:
+  1052→
+  1053→my-website.zip
+  1054→
+  1055→ZIP contents:
+  1056→
+  1057→my-website/
+  1058→├── index.html
+  1059→├── style.css
+  1060→├── script.js
+  1061→├── assets/
+  1062→└── data/
+  1063→
+  1064→Do not include:
+  1065→
+  1066→- API keys
+  1067→- Chat history
+  1068→- Internal database data
+  1069→- Application credentials
+  1070→- Internal tool metadata
+  1071→
+  1072→---
+  1073→
+  1074→41. Workspace Context Menu
+  1075→
+  1076→Right-clicking a file:
+  1077→
+  1078→Open
+  1079→Open in New Tab
+  1080→Rename
+  1081→Duplicate
+  1082→Delete
+  1083→Copy Path
+  1084→
+  1085→Right-clicking a folder:
+  1086→
+  1087→New File
+  1088→New Folder
+  1089→Rename
+  1090→Delete
+  1091→Copy Path
+  1092→
+  1093→---
+  1094→
+  1095→42. AI File Editing
+  1096→
+  1097→When the AI edits a file, visually indicate it.
+  1098→
+  1099→Example:
+  1100→
+  1101→index.html  ✦ AI editing
+  1102→
+  1103→During editing:
+  1104→
+  1105→- Disable conflicting manual operations where necessary.
+  1106→- Show live modification state.
+  1107→- Automatically save after successful AI operations.
+  1108→
+  1109→After completion:
+  1110→
+  1111→index.html  ✓ AI edited
+  1112→
+  1113→---
+  1114→
+  1115→43. AI Workflow Visualization
+  1116→
+  1117→The AI should visually communicate its workflow without overwhelming the user.
+  1118→
+  1119→Example:
+  1120→
+  1121→🧠 Thinking
+  1122→   Analyzing the navigation...
+  1123→
+  1124→✓ Read index.html
+  1125→
+  1126→✓ Read style.css
+  1127→
+  1128→🧠 Thinking
+  1129→   Found the mobile breakpoint issue...
+  1130→
+  1131→✓ Edit style.css
+  1132→
+  1133→✓ Reload preview
+  1134→
+  1135→✓ Click mobile menu
+  1136→
+  1137→✓ No console errors
+  1138→
+  1139→The mobile navigation is fixed.
+  1140→
+  1141→This creates a clear agent timeline.
+  1142→
+  1143→---
+  1144→
+  1145→44. Browser Automation
+  1146→
+  1147→Browser actions should operate only against the isolated preview.
+  1148→
+  1149→Tools:
+  1150→
+  1151→open_page
+  1152→reload_page
+  1153→click
+  1154→type
+  1155→press_key
+  1156→scroll
+  1157→hover
+  1158→select
+  1159→wait
+  1160→
+  1161→Inspection:
+  1162→
+  1163→get_dom
+  1164→get_element
+  1165→inspect_element
+  1166→get_console_logs
+  1167→get_page_errors
+  1168→get_network_errors
+  1169→take_screenshot
+  1170→
+  1171→Testing:
+  1172→
+  1173→run_javascript
+  1174→run_test
+  1175→check_page
+  1176→check_console
+  1177→check_links
+  1178→
+  1179→---
+  1180→
+  1181→45. JavaScript Execution Security
+  1182→
+  1183→"run_javascript" executes inside the preview context only.
+  1184→
+  1185→It must not have automatic access to:
+  1186→
+  1187→- Application API keys
+  1188→- Authentication tokens
+  1189→- Parent window privileged APIs
+  1190→- Internal application state
+  1191→- Workspace database
+  1192→- Browser storage belonging to the main application
+  1193→
+  1194→Use isolation such as a sandboxed iframe or equivalent secure preview environment.
+  1195→
+  1196→---
+  1197→
+  1198→46. File Tools
+  1199→
+  1200→AI tools:
+  1201→
+  1202→list_files
+  1203→read_file
+  1204→create_file
+  1205→write_file
+  1206→edit_file
+  1207→delete_file
+  1208→rename_file
+  1209→create_folder
+  1210→move_file
+  1211→search_files
+  1212→replace_content
+  1213→
+  1214→All file operations must be scoped to the current workspace.
+  1215→
+  1216→---
+  1217→
+  1218→47. Workspace Data Model
+  1219→
+  1220→Conceptually:
+  1221→
+  1222→Workspace
+  1223→├── id
+  1224→├── name
+  1225→├── files
+  1226→├── settings
+  1227→├── activeFile
+  1228→├── createdAt
+  1229→└── updatedAt
+  1230→
+  1231→Chat
+  1232→├── id
+  1233→├── workspaceId
+  1234→├── title
+  1235→├── messages
+  1236→├── createdAt
+  1237→└── updatedAt
+  1238→
+  1239→Message
+  1240→├── id
+  1241→├── role
+  1242→├── segments
+  1243→└── createdAt
+  1244→
+  1245→---
+  1246→
+  1247→48. Message Segment Model
+  1248→
+  1249→Assistant messages must support structured segments.
+  1250→
+  1251→segments:
+  1252→[
+  1253→  {
+  1254→    type: "thinking",
+  1255→    content: "..."
+  1256→  },
+  1257→  {
+  1258→    type: "tool_call",
+  1259→    tool: "read_file",
+  1260→    arguments: {}
+  1261→  },
+  1262→  {
+  1263→    type: "tool_result",
+  1264→    result: {}
+  1265→  },
+  1266→  {
+  1267→    type: "content",
+  1268→    content: "..."
+  1269→  }
+  1270→]
+  1271→
+  1272→This prevents reasoning, tools, and final responses from becoming one string.
+  1273→
+  1274→---
+  1275→
+  1276→49. Streaming Architecture
+  1277→
+  1278→Provider stream:
+  1279→
+  1280→Provider
+  1281→   ↓
+  1282→Provider Adapter
+  1283→   ↓
+  1284→Normalized Events
+  1285→   ↓
+  1286→Stream Parser
+  1287→   ↓
+  1288→Message Accumulator
+  1289→   ↓
+  1290→React/UI State
+  1291→
+  1292→Normalized events:
+  1293→
+  1294→reasoning_content
+  1295→content
+  1296→tool_call
+  1297→tool_result
+  1298→error
+  1299→done
+  1300→
+  1301→The accumulator must update existing segments instead of creating duplicate messages.
+  1302→
+  1303→---
+  1304→
+  1305→50. Context Management
+  1306→
+  1307→Do not send every workspace file to the AI on every request.
+  1308→
+  1309→Provide:
+  1310→
+  1311→- Workspace tree
+  1312→- Relevant files
+  1313→- Active file
+  1314→- Selected files
+  1315→- User prompt
+  1316→- Recent conversation
+  1317→- Relevant tool results
+  1318→
+  1319→Use targeted retrieval for large projects.
+  1320→
+  1321→---
+  1322→
+  1323→51. Autosave
+  1324→
+  1325→Changes should be debounced.
+  1326→
+  1327→Edit
+  1328→ ↓
+  1329→Debounce
+  1330→ ↓
+  1331→Persist
+  1332→ ↓
+  1333→Saved ✓
+  1334→
+  1335→Never save every keystroke individually.
+  1336→
+  1337→---
+  1338→
+  1339→52. Error Handling
+  1340→
+  1341→Errors must appear at the correct layer.
+  1342→
+  1343→AI
+  1344→
+  1345→AI request failed
+  1346→
+  1347→Unable to reach the configured provider.
+  1348→
+  1349→[Retry] [Settings]
+  1350→
+  1351→Preview
+  1352→
+  1353→Preview Error
+  1354→
+  1355→script.js produced a runtime error.
+  1356→
+  1357→[Open Console]
+  1358→
+  1359→Tool
+  1360→
+  1361→Tool Failed
+  1362→
+  1363→Unable to edit index.html.
+  1364→
+  1365→[Retry]
+  1366→
+  1367→Workspace
+  1368→
+  1369→Save Failed
+  1370→
+  1371→Your latest changes could not be saved.
+  1372→
+  1373→[Retry]
+  1374→
+  1375→---
+  1376→
+  1377→53. Responsive Mobile Design
+  1378→
+  1379→On mobile, do not squeeze all panels together.
+  1380→
+  1381→Use bottom navigation:
+  1382→
+  1383→┌──────────────────────────────┐
+  1384→│ Workspace Header             │
+  1385→├──────────────────────────────┤
+  1386→│                              │
+  1387→│                              │
+  1388→│       Current View           │
+  1389→│                              │
+  1390→│                              │
+  1391→├──────────────────────────────┤
+  1392→│ Code │ Preview │ AI │ Files │
+  1393→└──────────────────────────────┘
+  1394→
+  1395→Tabs:
+  1396→
+  1397→- Code
+  1398→- Preview
+  1399→- AI
+  1400→- Files
+  1401→
+  1402→The AI panel becomes a full-screen experience.
+  1403→
+  1404→The prompt box remains fixed at the bottom.
+  1405→
+  1406→---
+  1407→
+  1408→54. Mobile AI View
+  1409→
+  1410→┌──────────────────────────────┐
+  1411→│ ← AI Assistant        ⋯      │
+  1412→├──────────────────────────────┤
+  1413→│                              │
+  1414→│ 🧠 Thinking                  │
+  1415→│                              │
+  1416→│ ✓ Read file                  │
+  1417→│                              │
+  1418→│ Assistant response...        │
+  1419→│                              │
+  1420→├──────────────────────────────┤
+  1421→│ Prompt                       │
+  1422→│                              │
+  1423→│ 📎       Model       ↑       │
+  1424→└──────────────────────────────┘
+  1425→
+  1426→---
+  1427→
+  1428→55. Keyboard Shortcuts
+  1429→
+  1430→Support:
+  1431→
+  1432→Ctrl/Cmd + S
+  1433→Save
+  1434→
+  1435→Ctrl/Cmd + P
+  1436→Quick file search
+  1437→
+  1438→Ctrl/Cmd + K
+  1439→Focus AI prompt
+  1440→
+  1441→Ctrl/Cmd + Shift + P
+  1442→Command palette
+  1443→
+  1444→Ctrl/Cmd + B
+  1445→Toggle sidebar
+  1446→
+  1447→Ctrl/Cmd + Enter
+  1448→Send prompt
+  1449→
+  1450→Escape
+  1451→Close modal/panel
+  1452→
+  1453→---
+  1454→
+  1455→56. Command Palette
+  1456→
+  1457→Keyboard shortcut:
+  1458→
+  1459→"Ctrl/Cmd + Shift + P"
+  1460→
+  1461→UI:
+  1462→
+  1463→┌──────────────────────────────────────┐
+  1464→│ ⌕ Search commands...                 │
+  1465→├──────────────────────────────────────┤
+  1466→│ New File                             │
+  1467→│ New Folder                           │
+  1468→│ Save                                 │
+  1469→│ Download Workspace                   │
+  1470→│ Open Preview                         │
+  1471→│ Reload Preview                       │
+  1472→│ New Chat                             │
+  1473→│ Search Files                         │
+  1474→│ Run JavaScript                       │
+  1475→│ Toggle Sidebar                       │
+  1476→│ Open Settings                        │
+  1477→└──────────────────────────────────────┘
+  1478→
+  1479→---
+  1480→
+  1481→57. Button System
+  1482→
+  1483→All buttons should follow a consistent design system.
+  1484→
+  1485→Primary
+  1486→
+  1487→Used for:
+  1488→
+  1489→- Send
+  1490→- New Workspace
+  1491→- Save
+  1492→- Test Connection
+  1493→
+  1494→Characteristics:
+  1495→
+  1496→- Strong visual emphasis
+  1497→- 36–44px height
+  1498→- Rounded 8–10px
+  1499→- Icon + label where useful
+  1500→
+  1501→Secondary
+  1502→
+  1503→Used for:
+  1504→
+  1505→- Preview
+  1506→- Download
+  1507→- Add file
+  1508→- Settings
+  1509→
+  1510→Characteristics:
+  1511→
+  1512→- Subtle background
+  1513→- Visible border
+  1514→
+  1515→Ghost
+  1516→
+  1517→Used for:
+  1518→
+  1519→- Sidebar navigation
+  1520→- Toolbar actions
+  1521→- Minor actions
+  1522→
+  1523→Characteristics:
+  1524→
+  1525→- Transparent background
+  1526→- Hover background
+  1527→
+  1528→Destructive
+  1529→
+  1530→Used for:
+  1531→
+  1532→- Delete
+  1533→- Remove provider
+  1534→- Delete workspace
+  1535→
+  1536→Must clearly communicate destructive behavior.
+  1537→
+  1538→---
+  1539→
+  1540→58. Icon Buttons
+  1541→
+  1542→Icon-only controls should be approximately 32–36px.
+  1543→
+  1544→Every icon-only button must have:
+  1545→
+  1546→- Tooltip
+  1547→- Accessible label
+  1548→- Hover state
+  1549→- Keyboard focus state
+  1550→
+  1551→Examples:
+  1552→
+  1553→+    New
+  1554→⋯    More
+  1555→↻    Reload
+  1556→↓    Download
+  1557→×    Close
+  1558→⚙    Settings
+  1559→
+  1560→---
+  1561→
+  1562→59. Modals
+  1563→
+  1564→Use modals for:
+  1565→
+  1566→- Delete confirmation
+  1567→- Rename workspace
+  1568→- Provider configuration when appropriate
+  1569→- Import workspace
+  1570→- Dangerous actions
+  1571→
+  1572→Example:
+  1573→
+  1574→┌────────────────────────────────────┐
+  1575→│ Delete workspace?                  │
+  1576→│                                    │
+  1577→│ This cannot be undone.             │
+  1578→│                                    │
+  1579→│            Cancel   Delete         │
+  1580→└────────────────────────────────────┘
+  1581→
+  1582→Destructive button is placed on the right.
+  1583→
+  1584→---
+  1585→
+  1586→60. Toast Notifications
+  1587→
+  1588→Use short notifications for:
+  1589→
+  1590→- Saved
+  1591→- Download started
+  1592→- File created
+  1593→- Workspace deleted
+  1594→- Provider saved
+  1595→- Connection successful
+  1596→
+  1597→Example:
+  1598→
+  1599→✓ Workspace downloaded
+  1600→
+  1601→Toasts should not be used for important errors that require user action.
+  1602→
+  1603→---
+  1604→
+  1605→61. Loading States
+  1606→
+  1607→Never leave blank panels during loading.
+  1608→
+  1609→Use:
+  1610→
+  1611→- Skeletons
+  1612→- Spinners
+  1613→- Progress indicators
+  1614→
+  1615→Example:
+  1616→
+  1617→◌ Loading workspace...
+  1618→
+  1619→---
+  1620→
+  1621→62. Empty States
+  1622→
+  1623→Every major empty area should have an intentional empty state.
+  1624→
+  1625→Examples:
+  1626→
+  1627→Files
+  1628→
+  1629→No files yet
+  1630→
+  1631→Create your first HTML file.
+  1632→
+  1633→[ + New File ]
+  1634→
+  1635→Chats
+  1636→
+  1637→No conversations yet
+  1638→
+  1639→[ + New Chat ]
+  1640→
+  1641→Console
+  1642→
+  1643→No console messages
+  1644→
+  1645→---
+  1646→
+  1647→63. Workspace Creation
+  1648→
+  1649→Clicking "New Workspace" opens:
+  1650→
+  1651→Create Workspace
+  1652→
+  1653→Name
+  1654→[ My Website ]
+  1655→
+  1656→Start with
+  1657→
+  1658→[ Blank ]
+  1659→[ Landing Page ]
+  1660→[ Portfolio ]
+  1661→[ Documentation ]
+  1662→[ Custom ]
+  1663→
+  1664→                 [Create]
+  1665→
+  1666→AI can immediately begin building after creation.
+  1667→
+  1668→---
+  1669→
+  1670→64. Home Screen
+  1671→
+  1672→Before opening a workspace:
+  1673→
+  1674→                 ✦
+  1675→           AI HTML Workspace
+  1676→
+  1677→       What do you want to build?
+  1678→
+  1679→┌───────────────────────────────────────────┐
+  1680→│ Create a modern SaaS landing page...      │
+  1681→│                                           │
+  1682→│                                           │
+  1683→│                                ⚙      ↑   │
+  1684→└───────────────────────────────────────────┘
+  1685→
+  1686→[ Blank Workspace ]  [ Recent Workspaces ]
+  1687→
+  1688→Recent
+  1689→──────────────────────────────
+  1690→Portfolio Website
+  1691→Landing Page
+  1692→Dashboard UI
+  1693→
+  1694→---
+  1695→
+  1696→65. Workspace Import
+  1697→
+  1698→Support importing a ZIP project.
+  1699→
+  1700→Flow:
+  1701→
+  1702→Upload ZIP
+  1703→   ↓
+  1704→Validate archive
+  1705→   ↓
+  1706→Extract workspace
+  1707→   ↓
+  1708→Build file tree
+  1709→   ↓
+  1710→Open project
+  1711→
+  1712→Reject unsafe paths and unsupported archive structures.
+  1713→
+  1714→---
+  1715→
+  1716→66. Workspace Export
+  1717→
+  1718→Export must preserve:
+  1719→
+  1720→- File names
+  1721→- Folder structure
+  1722→- File contents
+  1723→- Binary assets
+  1724→
+  1725→It must not include application secrets.
+  1726→
+  1727→---
+  1728→
+  1729→67. Security Requirements
+  1730→
+  1731→All AI tools must validate:
+  1732→
+  1733→- Workspace ID
+  1734→- File path
+  1735→- Tool arguments
+  1736→- Permissions
+  1737→- Preview origin
+  1738→
+  1739→Prevent:
+  1740→
+  1741→../
+  1742→../../
+  1743→absolute host paths
+  1744→
+  1745→Preview JavaScript must remain isolated from application privileges.
+  1746→
+  1747→API keys must never enter:
+  1748→
+  1749→- Chat history
+  1750→- Tool results
+  1751→- Logs
+  1752→- ZIP exports
+  1753→- Preview environment
+  1754→
+  1755→---
+  1756→
+  1757→68. Performance Requirements
+  1758→
+  1759→The application should remain responsive with:
+  1760→
+  1761→- Large HTML files
+  1762→- Multiple files
+  1763→- Long chat histories
+  1764→- Long tool-call sequences
+  1765→- Streaming AI responses
+  1766→
+  1767→Use:
+  1768→
+  1769→- Debounced persistence
+  1770→- Virtualized long chat lists when necessary
+  1771→- Incremental streaming updates
+  1772→- Targeted file context
+  1773→- Lazy-loaded settings/tool panels
+  1774→- Efficient editor rendering
+  1775→
+  1776→---
+  1777→
+  1778→69. MVP
+  1779→
+  1780→Required
+  1781→
+  1782→- Modern responsive application shell
+  1783→- Sidebar
+  1784→- Workspace management
+  1785→- Multi-file file explorer
+  1786→- HTML/CSS/JS editor
+  1787→- File tabs
+  1788→- Live preview
+  1789→- Preview controls
+  1790→- Console
+  1791→- Browser testing
+  1792→- AI chat
+  1793→- Streaming
+  1794→- Thinking panel
+  1795→- Collapsible tool cards
+  1796→- File tools
+  1797→- Browser tools
+  1798→- JavaScript execution
+  1799→- Chat history
+  1800→- Workspace persistence
+  1801→- ZIP download
+  1802→- ZIP import
+  1803→- OpenAI-compatible provider
+  1804→- Optional API key
+  1805→- Model selection
+  1806→- Model discovery
+  1807→- Connection testing
+  1808→- Settings
+  1809→- Dark/light/system appearance
+  1810→- Mobile layout
+  1811→- Command palette
+  1812→- Keyboard shortcuts
+  1813→
+  1814→---
+  1815→
+  1816→70. Phase 2
+  1817→
+  1818→Potential additions:
+  1819→
+  1820→- Screenshot visual testing
+  1821→- Visual regression testing
+  1822→- Git integration
+  1823→- GitHub import/export
+  1824→- Collaborative editing
+  1825→- Automated test generation
+  1826→- Custom AI tools
+  1827→- Project templates
+  1828→- AI visual design mode
+  1829→- Website deployment
+  1830→- Multi-agent workflows
+  1831→
+  1832→---
+  1833→
+  1834→71. Final Acceptance Criteria
+  1835→
+  1836→The application is complete when:
+  1837→
+  1838→Workspace
+  1839→
+  1840→- Users can create workspaces.
+  1841→- Users can import ZIP projects.
+  1842→- Users can download complete workspaces.
+  1843→- Multiple files and folders work correctly.
+  1844→- Workspace state survives refreshes.
+  1845→
+  1846→Editor
+  1847→
+  1848→- HTML/CSS/JS editing works.
+  1849→- Multiple tabs work.
+  1850→- File explorer works.
+  1851→- Unsaved state is visible.
+  1852→- Autosave works.
+  1853→- Errors are visible.
+  1854→
+  1855→Preview
+  1856→
+  1857→- Websites render correctly.
+  1858→- Relative files work.
+  1859→- Assets work.
+  1860→- Responsive viewport controls work.
+  1861→- Reload works.
+  1862→- Console/errors/network inspection work.
+  1863→
+  1864→AI
+  1865→
+  1866→- AI can inspect workspace files.
+  1867→- AI can modify files.
+  1868→- AI can create/delete/rename files.
+  1869→- AI can execute JavaScript in the preview.
+  1870→- AI can click/type/scroll/interact with the website.
+  1871→- AI can inspect DOM and errors.
+  1872→- AI can test and fix issues iteratively.
+  1873→
+  1874→Reasoning
+  1875→
+  1876→- "reasoning_content" is parsed separately.
+  1877→- Reasoning is displayed only inside the Thinking panel.
+  1878→- Thinking streams correctly.
+  1879→- Thinking is collapsible.
+  1880→- Thinking collapses after completion.
+  1881→- Empty reasoning does not create an empty panel.
+  1882→- Reasoning is not mixed with normal content.
+  1883→- Reasoning does not contain tool cards.
+  1884→- Multiple reasoning segments are handled correctly.
+  1885→- Provider-specific reasoning fields are normalized.
+  1886→
+  1887→Tool calls
+  1888→
+  1889→- Tool calls appear as compact cards.
+  1890→- Cards support running/success/error/cancelled states.
+  1891→- Cards can expand/collapse.
+  1892→- Tool results do not appear as raw JSON by default.
+  1893→- Existing cards update during streaming.
+  1894→- Tool cards remain separate from Thinking.
+  1895→
+  1896→Chat
+  1897→
+  1898→- Chat history persists.
+  1899→- Messages survive refreshes.
+  1900→- Streaming works.
+  1901→- Stop generation works.
+  1902→- Retry works.
+  1903→- Regeneration works.
+  1904→- Search works.
+  1905→- Prompt box remains accessible.
+  1906→
+  1907→Providers
+  1908→
+  1909→- OpenAI-compatible Base URL works.
+  1910→- API key is optional.
+  1911→- Manual model entry works.
+  1912→- "/models" discovery works when available.
+  1913→- Connection testing works.
+  1914→- API keys are never exposed.
+  1915→
+  1916→UI
+  1917→
+  1918→- Every major action has a clear button.
+  1919→- Icon-only buttons have tooltips.
+  1920→- Primary/secondary/ghost/destructive buttons are visually distinct.
+  1921→- Controls remain consistent across the application.
+  1922→- Desktop uses the dual-panel workspace.
+  1923→- Mobile uses Code/Preview/AI/Files navigation.
+  1924→- Dark/light/system appearance works.
+  1925→- Empty/loading/error states are implemented.
+  1926→- No major panel feels visually overcrowded.
+  1927→
+  1928→The final product should feel like a focused AI-native web development environment: the user describes what they want, the AI can inspect and modify the complete project, interact with the running website, test its behavior, show its available reasoning in a collapsible Thinking panel, expose its tool activity through compact cards, and leave the user with a downloadable, functioning static website.
