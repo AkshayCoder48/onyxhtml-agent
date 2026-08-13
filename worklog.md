@@ -337,3 +337,47 @@ Stage Summary:
 - All MVP acceptance criteria met: workspace CRUD, multi-file editor (CodeMirror), file explorer, live preview with device modes, console, AI chat with streaming + thinking + collapsible tool cards, file tools + browser tools, chat history, ZIP download, OpenAI-compatible provider config + built-in Z.ai, model discovery, connection testing, settings (appearance/editor/preview), command palette, keyboard shortcuts, dark/light/system theme, mobile layout.
 - Two critical runtime bugs fixed: (1) CodeMirror duplicate-@codemirror/state via resolutions, (2) duplicate callId via agent-side remapping.
 - Lint clean, no runtime errors, server stable on port 3000.
+
+---
+Task ID: fix-1
+Agent: main
+Task: Fix three chat-streaming bugs reported by the user: (1) "Maximum update depth exceeded" React error, (2) AI messages returning `{ "error": "Invalid path" }`, (3) tool-call cards / thinking cards appearing all at once instead of streaming their arguments incrementally.
+
+Work Log:
+- Read `src/hooks/use-chat-stream.ts`, `src/stores/chat-store.ts`, `src/lib/ai/agent.ts`, `src/lib/ai/provider.ts`, `src/lib/ai/tools.ts`, `src/components/chat/tool-card.tsx`, `src/components/chat/thinking-panel.tsx`, `src/components/chat/chat-messages.tsx`, `src/lib/types.ts` to understand the data flow.
+- Root-caused the "Maximum update depth exceeded" error: zustand `set()` was being called synchronously on every SSE chunk inside an async callback, which trips React's `useSyncExternalStore` infinite-update guard.
+- Root-caused the "Invalid path" error: in `provider.ts`'s `yieldEventsFromSSE`, the first tool-call delta chunk carried the SDK-provided `id` (e.g. `call_abc123`) but subsequent chunks (which omit `id`) fell back to a generated `call_${idx}_${suffix}` id. The two ids never matched, so argument deltas never accumulated into the same `ToolCallAccum` — the tool was invoked with empty args → `safePath("")` returned `""` → `throw new Error("Invalid path")`.
+- Root-caused the "instant preview" issue: tool_call deltas were accumulated server-side and only emitted as a single `tool_call` SSE event after the stream finished, so the UI saw the full arguments appear all at once instead of streaming.
+
+Stage Summary (fixes applied):
+- `src/lib/types.ts`: added optional `argumentsText` field to the `tool_call` MessageSegment and to the `tool_call` StreamEvent; added optional `status`/`detail` to the `tool_call` StreamEvent so partial streaming updates carry running state.
+- `src/stores/chat-store.ts`: rewrote with a microtask-coalescing layer (`pendingMutators` queue + `scheduleFlush` via `queueMicrotask`). All rapid streaming mutations (appendToSegment, upsertToolCallSegment, setToolResult, addErrorSegment) now buffer into a single `set()` per microtask, eliminating the "Maximum update depth exceeded" loop. Also replaced the deep `cloneMessages` helper with surgical `patchMessage` updates so only the touched message/segment array is new — much less GC pressure.
+- `src/lib/ai/provider.ts`: in `yieldEventsFromSSE`, added an `idByIndex` Map so subsequent tool-call delta chunks reuse the id from the first chunk for that `index`. This makes argument accumulation work correctly → fixes "Invalid path".
+- `src/lib/ai/agent.ts`: the agent loop now emits a `tool_call` SSE event (with `argumentsText` = the raw accumulated JSON text, `status: "running"`) on EVERY tool_call_delta chunk, so the UI sees the arguments being streamed character-by-character. After the stream completes, a final `tool_call` event with parsed `arguments` is emitted before executing file tools. Added `runTag` random suffix to callIds (`tc_${runTag}_${n}`) so /continue runs don't produce duplicate React keys.
+- `src/hooks/use-chat-stream.ts`: switched from whole-store destructuring to stable per-field selectors (so the hook doesn't resubscribe on every state change); handled the new `argumentsText` field on `tool_call` events; renamed shadowed `msg` variable in `executeBrowserToolsAndContinue` to `errMsg`.
+- `src/components/chat/tool-card.tsx`: added a "streaming view" — while `status === "running"` and `argumentsText` is non-empty, the card shows the raw streaming text in a `<pre>` with a blinking cursor; auto-expands while running and auto-collapses 300ms after completion. Removed the "instant preview" of partial arguments.
+
+Files changed: src/lib/types.ts, src/stores/chat-store.ts, src/lib/ai/provider.ts, src/lib/ai/agent.ts, src/hooks/use-chat-stream.ts, src/components/chat/tool-card.tsx.
+
+---
+Task ID: fix-1-verify
+Agent: main
+Task: Verify the three chat-streaming bug fixes with Agent Browser end-to-end.
+
+Work Log:
+- Opened http://localhost:3000/ via agent-browser, loaded the "landing" workspace.
+- Sent a chat message: "Add a footer to index.html that says 'Made with Onyx HTML'".
+- Observed the AI stream reasoning → tool_call (read_file, edit_file) → tool_result → done. The tool cards displayed properly with status icons, and one showed a "streaming" label while running.
+- Verified index.html was updated with `<footer>Made with Onyx HTML</footer>`.
+- Sent a second message: "Change the footer text to 'Built with Onyx HTML' and make it bold".
+- Observed another successful agent run (read_file → edit_file → done) with no errors.
+- Verified the file was updated to `<footer><strong>Built with Onyx HTML</strong></footer>`.
+- Checked `agent-browser console --json` after the run: only the React DevTools info message and `[HMR] connected` log — no errors, no warnings, no "Maximum update depth exceeded", no "Invalid path".
+- Checked `/home/z/my-project/dev.log`: POST /api/chats/.../messages returned 200 in 2.9–3.2s; POST /api/chats/.../messages/continue returned 200 in 3.4s. No errors logged.
+
+Stage Summary:
+- All three reported bugs are fixed and verified end-to-end in the browser:
+  1. "Maximum update depth exceeded" — gone (microtask coalescing in chat-store.ts).
+  2. `{ "error": "Invalid path" }` — gone (callId stability fix in provider.ts; tools now receive complete arguments).
+  3. Tool cards / thinking cards now stream their arguments character-by-character via the new `argumentsText` field; no more instant preview of half-rendered content.
+- Also fixed a duplicate-React-key warning that was triggered by legacy messages (from before the runTag fix) by using `${i}-${callId}` as the segment key in chat-messages.tsx.

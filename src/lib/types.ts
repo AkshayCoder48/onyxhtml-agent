@@ -47,6 +47,10 @@ export type MessageSegment =
       type: "tool_call";
       tool: string;
       arguments: Record<string, unknown>;
+      // Raw streaming text of the arguments — filled in as the model streams
+      // the tool call. Used for live display in the tool card before the
+      // arguments JSON is complete.
+      argumentsText?: string;
       callId: string;
       status: "running" | "success" | "error" | "cancelled";
       label?: string;
@@ -129,8 +133,25 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export type StreamEvent =
   | { type: "reasoning_content"; content: string }
   | { type: "content"; content: string }
-  | { type: "tool_call"; tool: string; arguments: Record<string, unknown>; callId: string; label?: string }
-  | { type: "tool_result"; callId: string; status: "success" | "error" | "cancelled"; result?: unknown; error?: string; label?: string; detail?: string }
+  | {
+      type: "tool_call";
+      tool: string;
+      arguments: Record<string, unknown>;
+      argumentsText?: string;
+      callId: string;
+      label?: string;
+      detail?: string;
+      status?: "running" | "success" | "error" | "cancelled";
+    }
+  | {
+      type: "tool_result";
+      callId: string;
+      status: "success" | "error" | "cancelled";
+      result?: unknown;
+      error?: string;
+      label?: string;
+      detail?: string;
+    }
   | { type: "error"; content: string }
   | { type: "done" };
 

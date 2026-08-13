@@ -35,20 +35,20 @@ type Bridge = {
 };
 
 export function useChatStream(bridge: Bridge | null) {
-  const {
-    chatId,
-    appendMessage,
-    startStreaming,
-    stopStreaming,
-    appendToSegment,
-    upsertToolCallSegment,
-    setToolResult,
-    addErrorSegment,
-    setPendingBrowserTools,
-    isStreaming,
-    setChatId,
-    setMessages,
-  } = useChatStore();
+  // Use stable selectors so the hook doesn't re-subscribe on every render.
+  // Action functions in zustand are stable references.
+  const chatId = useChatStore((s) => s.chatId);
+  const appendMessage = useChatStore((s) => s.appendMessage);
+  const startStreaming = useChatStore((s) => s.startStreaming);
+  const stopStreaming = useChatStore((s) => s.stopStreaming);
+  const appendToSegment = useChatStore((s) => s.appendToSegment);
+  const upsertToolCallSegment = useChatStore((s) => s.upsertToolCallSegment);
+  const setToolResult = useChatStore((s) => s.setToolResult);
+  const addErrorSegment = useChatStore((s) => s.addErrorSegment);
+  const setPendingBrowserTools = useChatStore((s) => s.setPendingBrowserTools);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const setChatId = useChatStore((s) => s.setChatId);
+  const setMessages = useChatStore((s) => s.setMessages);
 
   const abortRef = React.useRef<AbortController | null>(null);
   const bridgeRef = React.useRef(bridge);
@@ -88,15 +88,18 @@ export function useChatStream(bridge: Bridge | null) {
           break;
         }
         case "tool_call": {
-          // Streaming tool_call: arguments may arrive incrementally but we
-          // expect the backend to send the full tool_call event. Mark as running.
+          // Streaming tool_call: arguments may be partial (incomplete JSON)
+          // during streaming. We upsert the segment so the UI shows the
+          // arguments being written character-by-character via `argumentsText`.
           const seg: MessageSegment = {
             type: "tool_call",
             tool: evt.tool,
             arguments: evt.arguments ?? {},
+            argumentsText: evt.argumentsText,
             callId: evt.callId,
-            status: "running",
+            status: evt.status ?? "running",
             label: evt.label,
+            detail: evt.detail,
           };
           upsertToolCallSegment(assistantId, seg);
           break;
@@ -119,6 +122,7 @@ export function useChatStream(bridge: Bridge | null) {
           return true;
         }
       }
+      void chatIdLocal;
       return false;
     },
     [appendToSegment, upsertToolCallSegment, setToolResult, addErrorSegment]
@@ -169,21 +173,10 @@ export function useChatStream(bridge: Bridge | null) {
         if (evt.type === "tool_call" && BROWSER_TOOLS.has(evt.tool)) {
           if (!handled.has(evt.callId)) {
             handled.add(evt.callId);
-            // We'll execute when we get the corresponding tool_result status running,
-            // OR immediately if bridge present and there's a tool_call.
-            // We DON'T execute here yet — wait for backend to send tool_result OR
-            // for the stream to end and have browser tools pending.
           }
         }
 
         await handleEvent(assistantId, evt, chatIdLocal);
-
-        // If this is a tool_call for a browser tool, immediately attempt execution
-        // so we have a result ready for the /continue call.
-        if (evt.type === "tool_call" && BROWSER_TOOLS.has(evt.tool)) {
-          // mark for continue handling — we'll process after stream ends OR
-          // when an explicit tool_result arrives.
-        }
 
         if (evt.type === "done") {
           break;
@@ -234,9 +227,9 @@ export function useChatStream(bridge: Bridge | null) {
           });
           results.push({ callId, result: r.result, error: r.error });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : "Execution failed";
-          setToolResult(assistantId, callId, { status: "error", error: msg });
-          results.push({ callId, error: msg });
+          const errMsg = err instanceof Error ? err.message : "Execution failed";
+          setToolResult(assistantId, callId, { status: "error", error: errMsg });
+          results.push({ callId, error: errMsg });
         }
       }
 

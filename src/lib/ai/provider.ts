@@ -173,6 +173,12 @@ async function* yieldEventsFromSSE(
   // Per-call suffix so fallback callIds (when the provider omits ids) are
   // unique across agentic rounds — prevents duplicate React keys / segments.
   const callSuffix = Math.random().toString(36).slice(2, 8);
+  // Track the SDK-provided id for each tool-call index so we can re-use it
+  // on every subsequent delta chunk. Without this, the first chunk (which
+  // carries the SDK id) and later chunks (which usually omit it) would be
+  // treated as different tool calls — causing the arguments to never
+  // accumulate and tools to be invoked with empty args ("Invalid path").
+  const idByIndex = new Map<number, string>();
   for await (const data of parseSSEStream(stream)) {
     let parsed: any;
     try {
@@ -198,7 +204,17 @@ async function* yieldEventsFromSSE(
       if (d.toolCalls) {
         for (const tc of d.toolCalls) {
           const idx = typeof tc.index === "number" ? tc.index : 0;
-          const id = typeof tc.id === "string" && tc.id ? tc.id : `call_${idx}_${callSuffix}`;
+          // Resolve the id: prefer SDK-provided id, fall back to a stable
+          // index-based id (same across all chunks for this index).
+          let id: string;
+          if (typeof tc.id === "string" && tc.id) {
+            idByIndex.set(idx, tc.id);
+            id = tc.id;
+          } else {
+            const cached = idByIndex.get(idx);
+            id = cached ?? `call_${idx}_${callSuffix}`;
+            if (!cached) idByIndex.set(idx, id);
+          }
           const fn = tc.function ?? {};
           const name = typeof fn.name === "string" ? fn.name : undefined;
           const argsDelta = typeof fn.arguments === "string" ? fn.arguments : undefined;

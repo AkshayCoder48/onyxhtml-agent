@@ -9,8 +9,6 @@ type ChatState = {
   isStreaming: boolean;
   streamingMessageId: string | null;
   pendingBrowserTools: string[]; // callIds awaiting client-side execution
-  // local-only: assistant message currently being streamed
-  // (we mutate its segments directly via the helpers below)
 
   setChatId: (id: string | null) => void;
   setMessages: (msgs: Message[]) => void;
@@ -19,7 +17,7 @@ type ChatState = {
   stopStreaming: () => void;
   clearMessages: () => void;
 
-  // streaming segment helpers
+  // streaming segment helpers — these are buffered & coalesced
   appendToSegment: (
     messageId: string,
     predicate: (s: MessageSegment) => boolean,
@@ -36,8 +34,62 @@ type ChatState = {
   setPendingBrowserTools: (callIds: string[]) => void;
 };
 
-function cloneMessages(msgs: Message[]): Message[] {
-  return msgs.map((m) => ({ ...m, segments: m.segments.map((s) => ({ ...s })) }));
+// ---------- Coalescing layer ----------
+//
+// During streaming, the agent emits dozens of SSE events per second
+// (reasoning_content, content, tool_call_delta, …). Calling zustand's
+// `set()` synchronously on every chunk triggers React's
+// `useSyncExternalStore` "Maximum update depth exceeded" guard because
+// each set() invalidates the snapshot and forces a re-render inside
+// an async callback.
+//
+// To avoid this we buffer the *mutations* in a queue and flush them
+// in a single `set()` call on a microtask. This collapses N rapid
+// appends into one state update while preserving the order of mutations.
+
+type Mutator = (msgs: Message[]) => Message[];
+
+const pendingMutators: Mutator[] = [];
+let flushScheduled = false;
+
+function applyMutators(msgs: Message[]): Message[] {
+  if (pendingMutators.length === 0) return msgs;
+  let next = msgs;
+  // Work from a shallow copy so we don't mutate the cached state.
+  next = next.slice();
+  for (const fn of pendingMutators) {
+    next = fn(next);
+  }
+  pendingMutators.length = 0;
+  return next;
+}
+
+function scheduleFlush(set: (fn: (s: ChatState) => Partial<ChatState>) => void) {
+  if (flushScheduled) return;
+  flushScheduled = true;
+  queueMicrotask(() => {
+    flushScheduled = false;
+    set((s) => {
+      if (pendingMutators.length === 0) return {};
+      const messages = applyMutators(s.messages);
+      return { messages };
+    });
+  });
+}
+
+// Immutably patch a single message's segments. Returns a NEW messages array
+// (shallow-copied) so React sees a new reference, but only the touched
+// message and its touched segment array are new objects.
+function patchMessage(
+  msgs: Message[],
+  messageId: string,
+  patch: (msg: Message) => Message
+): Message[] {
+  const idx = msgs.findIndex((m) => m.id === messageId);
+  if (idx < 0) return msgs;
+  const next = msgs.slice();
+  next[idx] = patch(msgs[idx]);
+  return next;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -48,11 +100,18 @@ export const useChatStore = create<ChatState>((set) => ({
   pendingBrowserTools: [],
 
   setChatId: (id) =>
-    set({ chatId: id, messages: [], isStreaming: false, streamingMessageId: null, pendingBrowserTools: [] }),
+    set({
+      chatId: id,
+      messages: [],
+      isStreaming: false,
+      streamingMessageId: null,
+      pendingBrowserTools: [],
+    }),
 
   setMessages: (msgs) => set({ messages: msgs }),
 
-  appendMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
+  appendMessage: (msg) =>
+    set((s) => ({ messages: [...s.messages, msg] })),
 
   startStreaming: (assistantId) =>
     set({ isStreaming: true, streamingMessageId: assistantId }),
@@ -60,75 +119,96 @@ export const useChatStore = create<ChatState>((set) => ({
   stopStreaming: () =>
     set({ isStreaming: false, streamingMessageId: null, pendingBrowserTools: [] }),
 
-  clearMessages: () => set({ messages: [], isStreaming: false, streamingMessageId: null }),
+  clearMessages: () =>
+    set({ messages: [], isStreaming: false, streamingMessageId: null }),
 
-  appendToSegment: (messageId, predicate, create, mutate) =>
-    set((s) => {
-      const msgs = cloneMessages(s.messages);
-      const idx = msgs.findIndex((m) => m.id === messageId);
-      if (idx < 0) return {};
-      const msg = msgs[idx];
-      const last = msg.segments[msg.segments.length - 1];
-      if (last && predicate(last)) {
-        msg.segments[msg.segments.length - 1] = mutate(last);
-      } else {
-        const seg = create();
-        msg.segments.push(seg);
-      }
-      msgs[idx] = msg;
-      return { messages: msgs };
-    }),
-
-  upsertToolCallSegment: (messageId, seg) =>
-    set((s) => {
-      const msgs = cloneMessages(s.messages);
-      const idx = msgs.findIndex((m) => m.id === messageId);
-      if (idx < 0) return {};
-      const msg = msgs[idx];
-      const toolSeg = seg as Extract<MessageSegment, { type: "tool_call" }>;
-      const existingIdx = msg.segments.findIndex(
-        (x) => x.type === "tool_call" && (x as Extract<MessageSegment, { type: "tool_call" }>).callId === toolSeg.callId
-      );
-      if (existingIdx >= 0) {
-        const existing = msg.segments[existingIdx] as Extract<MessageSegment, { type: "tool_call" }>;
-        msg.segments[existingIdx] = {
-          ...existing,
-          ...toolSeg,
-          // keep latest arguments/status; tool streaming may add label/detail progressively
-          arguments: toolSeg.arguments ?? existing.arguments,
-          status: toolSeg.status ?? existing.status,
-        };
-      } else {
-        msg.segments.push(seg);
-      }
-      msgs[idx] = msg;
-      return { messages: msgs };
-    }),
-
-  setToolResult: (messageId, callId, patch) =>
-    set((s) => {
-      const msgs = cloneMessages(s.messages);
-      const idx = msgs.findIndex((m) => m.id === messageId);
-      if (idx < 0) return {};
-      const msg = msgs[idx];
-      msg.segments = msg.segments.map((seg) => {
-        if (seg.type === "tool_call" && seg.callId === callId) {
-          return { ...seg, ...patch } as MessageSegment;
+  appendToSegment: (messageId, predicate, create, mutate) => {
+    pendingMutators.push((msgs) =>
+      patchMessage(msgs, messageId, (msg) => {
+        const segments = msg.segments;
+        const last = segments[segments.length - 1];
+        if (last && predicate(last)) {
+          const nextSegs = segments.slice();
+          nextSegs[nextSegs.length - 1] = mutate(last);
+          return { ...msg, segments: nextSegs };
         }
-        return seg;
-      });
-      msgs[idx] = msg;
-      return { messages: msgs };
-    }),
+        return { ...msg, segments: [...segments, create()] };
+      })
+    );
+    scheduleFlush(set);
+  },
 
-  addErrorSegment: (messageId, content) =>
-    set((s) => {
-      const msgs = cloneMessages(s.messages);
-      const idx = msgs.findIndex((m) => m.id === messageId);
-      if (idx < 0) return {};
-      msgs[idx].segments.push({ type: "error", content });
-      return { messages: msgs };
-    }),
+  upsertToolCallSegment: (messageId, seg) => {
+    const toolSeg = seg as Extract<MessageSegment, { type: "tool_call" }>;
+    pendingMutators.push((msgs) =>
+      patchMessage(msgs, messageId, (msg) => {
+        const idx = msg.segments.findIndex(
+          (x) =>
+            x.type === "tool_call" &&
+            (x as Extract<MessageSegment, { type: "tool_call" }>).callId ===
+              toolSeg.callId
+        );
+        if (idx >= 0) {
+          const existing = msg.segments[idx] as Extract<
+            MessageSegment,
+            { type: "tool_call" }
+          >;
+          const merged: Extract<MessageSegment, { type: "tool_call" }> = {
+            ...existing,
+            ...toolSeg,
+            // For streaming tool_call updates, we always want the latest
+            // arguments / argumentsText / status from the incoming segment.
+            arguments:
+              toolSeg.arguments && Object.keys(toolSeg.arguments).length > 0
+                ? toolSeg.arguments
+                : existing.arguments,
+            argumentsText:
+              toolSeg.argumentsText ?? existing.argumentsText,
+            status: toolSeg.status ?? existing.status,
+            // Persist label/detail once set.
+            label: toolSeg.label ?? existing.label,
+            detail: toolSeg.detail ?? existing.detail,
+            result: toolSeg.result ?? existing.result,
+            error: toolSeg.error ?? existing.error,
+          };
+          const nextSegs = msg.segments.slice();
+          nextSegs[idx] = merged;
+          return { ...msg, segments: nextSegs };
+        }
+        return { ...msg, segments: [...msg.segments, seg] };
+      })
+    );
+    scheduleFlush(set);
+  },
 
-  setPendingBrowserTools: (callIds) => set({ pendingBrowserTools: callIds }),
+  setToolResult: (messageId, callId, patch) => {
+    pendingMutators.push((msgs) =>
+      patchMessage(msgs, messageId, (msg) => {
+        let touched = false;
+        const nextSegs = msg.segments.map((seg) => {
+          if (seg.type === "tool_call" && seg.callId === callId) {
+            touched = true;
+            return { ...seg, ...patch } as MessageSegment;
+          }
+          return seg;
+        });
+        if (!touched) return msg;
+        return { ...msg, segments: nextSegs };
+      })
+    );
+    scheduleFlush(set);
+  },
+
+  addErrorSegment: (messageId, content) => {
+    pendingMutators.push((msgs) =>
+      patchMessage(msgs, messageId, (msg) => ({
+        ...msg,
+        segments: [...msg.segments, { type: "error", content }],
+      }))
+    );
+    scheduleFlush(set);
+  },
+
+  setPendingBrowserTools: (callIds) =>
+    set({ pendingBrowserTools: callIds }),
 }));

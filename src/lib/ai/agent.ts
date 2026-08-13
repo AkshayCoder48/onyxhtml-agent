@@ -383,13 +383,20 @@ async function runAgentLoop(ctx: LoopCtx) {
   const toolDefs = getToolDefinitions();
   // Global counter (across rounds) so every tool call gets a unique callId.
   // The provider may reuse ids like `call_0` each round, which would collide
-  // in the message segments / React keys. We remap to `tc_<n>` per round.
+  // in the message segments / React keys. We remap to `tc_<runTag>_<n>` per
+  // round, where `runTag` is a short random suffix unique to this agent run
+  // (so /continue calls don't collide with the original run's callIds).
+  const runTag = Math.random().toString(36).slice(2, 6);
   let callIdSeq = 0;
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let reasoningText = "";
     let contentText = "";
     const toolCalls: ToolCallAccum[] = [];
     const roundCallIdMap = new Map<string, string>();
+    // Tracks whether we've already emitted a tool_call SSE event for a given
+    // accumulated callId, so we only emit on the *first* delta and then patch
+    // the same segment on subsequent deltas (true streaming display).
+    const emittedToolCallIds = new Set<string>();
     let hadError = false;
     let errorMsg = "";
 
@@ -408,7 +415,7 @@ async function runAgentLoop(ctx: LoopCtx) {
           // Remap the provider's callId to a globally-unique id for this round.
           let mapped = roundCallIdMap.get(ev.callId);
           if (!mapped) {
-            mapped = `tc_${callIdSeq++}`;
+            mapped = `tc_${runTag}_${callIdSeq++}`;
             roundCallIdMap.set(ev.callId, mapped);
           }
           const existing = toolCalls.find((t) => t.callId === mapped);
@@ -422,6 +429,31 @@ async function runAgentLoop(ctx: LoopCtx) {
               arguments: ev.argumentsDelta ?? "",
               index: ev.index,
             });
+          }
+
+          // Stream the tool_call to the client as it accumulates so the UI
+          // can show the arguments being written character-by-character.
+          const accum = toolCalls.find((t) => t.callId === mapped)!;
+          if (accum.name) {
+            // Best-effort partial parse for the `arguments` field. If the JSON
+            // is incomplete we send an empty object — the client will rely on
+            // `argumentsText` for live display until the call completes.
+            let partialArgs: Record<string, unknown> = {};
+            try {
+              partialArgs = JSON.parse(accum.arguments);
+            } catch {
+              // not yet complete JSON — that's fine during streaming
+            }
+            ctx.send({
+              type: "tool_call",
+              tool: accum.name,
+              arguments: partialArgs,
+              argumentsText: accum.arguments,
+              callId: accum.callId,
+              label: getToolLabel(accum.name),
+              status: "running",
+            });
+            emittedToolCallIds.add(accum.callId);
           }
         } else if (ev.type === "error") {
           hadError = true;
@@ -500,49 +532,81 @@ async function runAgentLoop(ctx: LoopCtx) {
       const isBrowser = isBrowserTool(tc.name);
 
       if (isBrowser) {
-        // Emit tool_call with status running (frontend reads it)
-        ctx.send({
-          type: "tool_call",
-          tool: tc.name,
-          arguments: args,
-          callId: tc.callId,
-          label,
-          detail,
-          // @ts-expect-error extended field — frontend reads `status`
-          status: "running",
-        } as StreamEvent);
-        // Add segment in running status
-        segments.push({
-          type: "tool_call",
-          tool: tc.name,
-          arguments: args,
-          callId: tc.callId,
-          status: "running",
-          label,
-          detail,
-        });
+        // If we already emitted a streaming tool_call for this id, we don't
+        // need to re-emit — just ensure the segment exists in `segments`
+        // with running status. Otherwise emit one now.
+        if (!emittedToolCallIds.has(tc.callId)) {
+          ctx.send({
+            type: "tool_call",
+            tool: tc.name,
+            arguments: args,
+            argumentsText: tc.arguments,
+            callId: tc.callId,
+            label,
+            detail,
+            status: "running",
+          });
+          emittedToolCallIds.add(tc.callId);
+        }
+        // Make sure the segment exists in our persisted segments array.
+        const existingSegIdx = segments.findIndex(
+          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+            s.type === "tool_call" && s.callId === tc.callId
+        );
+        if (existingSegIdx < 0) {
+          segments.push({
+            type: "tool_call",
+            tool: tc.name,
+            arguments: args,
+            argumentsText: tc.arguments,
+            callId: tc.callId,
+            status: "running",
+            label,
+            detail,
+          });
+        }
         browserCallIds.push(tc.callId);
         // We do NOT append a tool message yet — that happens on /continue
       } else {
-        // Emit tool_call (no status — file tools execute immediately)
+        // For file tools, emit a final tool_call with the complete parsed
+        // arguments (replaces the streamed partial). This also handles the
+        // case where the tool name was empty during streaming.
         ctx.send({
           type: "tool_call",
           tool: tc.name,
           arguments: args,
+          argumentsText: tc.arguments,
           callId: tc.callId,
           label,
           detail,
-        });
-        // Add segment in running status
-        const segIdx = segments.push({
-          type: "tool_call",
-          tool: tc.name,
-          arguments: args,
-          callId: tc.callId,
           status: "running",
-          label,
-          detail,
-        }) - 1;
+        });
+        emittedToolCallIds.add(tc.callId);
+
+        // Add segment in running status (or update if streaming already created it)
+        const existingSegIdx = segments.findIndex(
+          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+            s.type === "tool_call" && s.callId === tc.callId
+        );
+        let segIdx: number;
+        if (existingSegIdx < 0) {
+          segIdx = segments.push({
+            type: "tool_call",
+            tool: tc.name,
+            arguments: args,
+            argumentsText: tc.arguments,
+            callId: tc.callId,
+            status: "running",
+            label,
+            detail,
+          }) - 1;
+        } else {
+          segIdx = existingSegIdx;
+          const seg = segments[segIdx] as Extract<MessageSegment, { type: "tool_call" }>;
+          seg.arguments = args;
+          seg.argumentsText = tc.arguments;
+          seg.detail = detail;
+        }
 
         // Execute file tool server-side
         let result: unknown;
@@ -594,7 +658,7 @@ async function runAgentLoop(ctx: LoopCtx) {
       ctx.send({
         type: "browser_tools_pending",
         callIds: browserCallIds,
-      });
+      } as unknown as StreamEvent);
       ctx.sendDone();
       return;
     }

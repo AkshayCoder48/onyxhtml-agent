@@ -65,6 +65,25 @@ export function ToolCard({
   const isFileTool = FILE_TOOLS.has(seg.tool);
   const isBrowserTool = BROWSER_TOOLS.has(seg.tool);
 
+  // Auto-expand the card while the tool is streaming/running so the user
+  // can watch the arguments being written.
+  React.useEffect(() => {
+    if (status === "running") {
+      setOpen(true);
+    } else if (status === "success" || status === "error" || status === "cancelled") {
+      // Collapse after a short delay once finished.
+      const t = setTimeout(() => setOpen(false), 300);
+      return () => clearTimeout(t);
+    }
+  }, [status]);
+
+  // The streaming raw text — used while the tool is running and the JSON
+  // arguments may still be incomplete. Once the call completes we show the
+  // parsed arguments instead.
+  const streamingText = seg.argumentsText ?? "";
+  const hasStreamingText = streamingText.length > 0;
+  const showStreamingView = status === "running" && hasStreamingText;
+
   return (
     <div className="my-1.5 rounded-lg border bg-card">
       <button
@@ -83,18 +102,40 @@ export function ToolCard({
             {seg.label ?? argFile ?? argTarget}
           </span>
         )}
+        {showStreamingView && (
+          <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+            <span className="inline-block size-1 animate-pulse-soft rounded-full bg-accent-strong" />
+            streaming
+          </span>
+        )}
       </button>
       {open && (
         <div className="space-y-2 border-t px-2.5 py-2 text-xs">
-          <KVTable
-            rows={[
-              ["Tool", label],
-              ...(argFile ? ([["File", argFile]] as [string, string][]) : []),
-              ...(argTarget ? ([["Target", argTarget]] as [string, string][]) : []),
-              ["Status", status],
-              ...(seg.detail ? ([["Detail", seg.detail]] as [string, string][]) : []),
-            ]}
-          />
+          {showStreamingView ? (
+            // Live streaming view — show the raw arguments text as it's
+            // written by the model. This is the "no instant preview" mode
+            // the user asked for: the card builds up character by character.
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <Loader2 className="size-2.5 animate-spin" />
+                Writing arguments…
+              </div>
+              <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-[11px] font-mono whitespace-pre-wrap break-words">
+                {streamingText}
+                <span className="ml-0.5 inline-block h-3 w-1 animate-pulse-soft bg-accent-strong align-text-bottom" />
+              </pre>
+            </div>
+          ) : (
+            <KVTable
+              rows={[
+                ["Tool", label],
+                ...(argFile ? ([["File", argFile]] as [string, string][]) : []),
+                ...(argTarget ? ([["Target", argTarget]] as [string, string][]) : []),
+                ["Status", status],
+                ...(seg.detail ? ([["Detail", seg.detail]] as [string, string][]) : []),
+              ]}
+            />
+          )}
 
           {/* Action buttons */}
           <div className="flex flex-wrap items-center gap-1.5">

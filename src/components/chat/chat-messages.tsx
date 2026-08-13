@@ -93,10 +93,15 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
   return (
     <div className="flex flex-col gap-1">
       {message.segments.map((seg, i) => {
+        // Use the segment index as part of the key so legacy messages with
+        // duplicate callIds (from before the runTag fix) don't collide.
+        // New messages use unique `tc_<runTag>_<n>` callIds, but the index
+        // keeps the key stable across re-renders within a single message.
+        const segKey = `${i}-${seg.type === "tool_call" ? seg.callId : ""}`;
         if (seg.type === "thinking") {
           return (
             <ThinkingPanel
-              key={i}
+              key={segKey}
               content={seg.content}
               streaming={streaming && i === message.segments.length - 1}
             />
@@ -104,7 +109,7 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
         }
         if (seg.type === "content") {
           return (
-            <div key={i} className="animate-fade-in">
+            <div key={segKey} className="animate-fade-in">
               <MarkdownContent
                 content={seg.content}
                 onFileClick={(path) => {
@@ -118,7 +123,7 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
         if (seg.type === "tool_call") {
           return (
             <ToolCard
-              key={seg.callId ?? i}
+              key={segKey}
               seg={seg}
               onOpenFile={(path) => {
                 setActiveFile(path);
@@ -129,7 +134,7 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
           );
         }
         if (seg.type === "error") {
-          return <ErrorCard key={i} content={seg.content} />;
+          return <ErrorCard key={segKey} content={seg.content} />;
         }
         return null;
       })}
