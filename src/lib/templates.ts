@@ -1,3 +1,5 @@
+import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "./agent-md";
+
 export type TemplateKey = "blank" | "landing" | "portfolio" | "docs";
 
 export type TemplateFile = {
@@ -10,6 +12,15 @@ export type Template = {
   name: string;
   description: string;
   files: TemplateFile[];
+};
+
+// Every workspace ships with AGENT.md — the OnyxHTML Agent operating manual.
+// It is prepended to every template's file list so new workspaces always
+// have it. Existing workspaces get it via a migration in the workspaces API
+// route (see src/app/api/workspaces/[id]/route.ts).
+export const AGENT_TEMPLATE_FILE: TemplateFile = {
+  path: AGENT_MD_FILENAME,
+  content: AGENT_MD_CONTENT,
 };
 
 export const TEMPLATES: Record<TemplateKey, Template> = {

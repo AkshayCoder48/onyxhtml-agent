@@ -53,6 +53,14 @@ type ChatState = {
   ) => void;
 
   setPendingBrowserTools: (callIds: string[]) => void;
+
+  // Rename a message's ID. Used to reconcile the client-generated assistant
+  // message ID (e.g. "a_abc123") with the server's DB message ID (e.g.
+  // "cmss...") when the first stream event arrives. Without this, all
+  // subsequent text.delta / tool.start events would fail to find the message
+  // and be silently dropped — causing the "stuck on thinking" UI bug where
+  // the AI's response never appears during streaming.
+  renameMessage: (oldId: string, newId: string) => void;
 };
 
 // Immutably patch a single message. Returns a NEW messages array (shallow
@@ -208,4 +216,17 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
 
   setPendingBrowserTools: (callIds) => set({ pendingBrowserTools: callIds }),
+
+  renameMessage: (oldId, newId) =>
+    set((s) => {
+      if (oldId === newId) return s;
+      const idx = s.messages.findIndex((m) => m.id === oldId);
+      if (idx < 0) return s;
+      const next = s.messages.slice();
+      next[idx] = { ...next[idx], id: newId };
+      // Also update streamingMessageId if it was pointing at the old id.
+      const streamingMessageId =
+        s.streamingMessageId === oldId ? newId : s.streamingMessageId;
+      return { messages: next, streamingMessageId };
+    }),
 }));

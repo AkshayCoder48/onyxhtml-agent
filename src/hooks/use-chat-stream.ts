@@ -95,6 +95,8 @@ export function useChatStream(bridge: Bridge | null) {
   const setAiEditing = useWorkspaceStore((s) => s.setAiEditing);
   const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
 
+  const renameMessage = useChatStore((s) => s.renameMessage);
+
   const abortRef = React.useRef<AbortController | null>(null);
   const bridgeRef = React.useRef(bridge);
   React.useEffect(() => {
@@ -350,10 +352,34 @@ export function useChatStream(bridge: Bridge | null) {
       };
       resetWatchdog();
 
+      // CRITICAL: The client creates the assistant message with a local ID
+      // (e.g. "a_abc123"), but the server sends stream events with the DB
+      // message's ID (e.g. "cmss..."). If we don't reconcile these IDs,
+      // every appendTextDelta / upsertToolCallSegment call will fail to find
+      // the message and silently drop the update — causing the "stuck on
+      // thinking" UI bug where the AI's response never appears during
+      // streaming (only after a page reload fetches the persisted message).
+      //
+      // Fix: on the FIRST event that carries a server messageId different
+      // from our local assistantId, rename the message in the store. After
+      // that, all subsequent events (text.delta, tool.start, etc.) will
+      // find the message by its new (server) ID.
+      let idReconciled = false;
+      // Track the CURRENT message id (starts as the client-generated id,
+      // becomes the server's id after reconciliation).
+      let currentMessageId = assistantId;
+
       try {
         for await (const evt of consumeReadableStream(stream, { signal })) {
           if (signal.aborted || timedOut) break;
           resetWatchdog();
+
+          // Reconcile the message ID on the first event that has a messageId.
+          if (!idReconciled && evt.messageId && evt.messageId !== assistantId) {
+            renameMessage(assistantId, evt.messageId);
+            currentMessageId = evt.messageId;
+            idReconciled = true;
+          }
 
           // Track browser tool calls that need client-side execution. We
           // collect them from tool.start events (so we know the tool name)
@@ -375,7 +401,7 @@ export function useChatStream(bridge: Bridge | null) {
           // User cancelled — preserve partial content (PRD §34).
         } else {
           const msg = err instanceof Error ? err.message : "Stream error";
-          addErrorSegment(assistantId, msg);
+          addErrorSegment(currentMessageId, msg);
           toast.error("AI stream error", { description: msg });
         }
       } finally {
@@ -384,7 +410,7 @@ export function useChatStream(bridge: Bridge | null) {
 
       return { browserPending };
     },
-    [addErrorSegment]
+    [addErrorSegment, renameMessage]
   );
 
   // ---------- Browser tool execution + /continue loop ----------

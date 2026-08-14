@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { TEMPLATES, TemplateKey } from "@/lib/templates";
+import { AGENT_TEMPLATE_FILE, TEMPLATES, TemplateKey } from "@/lib/templates";
 import { Workspace, WorkspaceSettings } from "@/lib/types";
 import { parseJSON, stringifyJSON } from "@/lib/settings";
 
@@ -57,10 +57,16 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // Seed files
-  if (tpl.files.length > 0) {
+  // Seed files — ALWAYS include AGENT.md (the OnyxHTML Agent operating
+  // manual) so the user can read/edit it and the agent is forced to read
+  // it before any task. We dedupe by path in case a template already lists
+  // AGENT.md (templates don't, but defensive coding is cheap).
+  const seedFiles = [AGENT_TEMPLATE_FILE, ...tpl.files.filter(
+    (f) => f.path !== AGENT_TEMPLATE_FILE.path
+  )];
+  if (seedFiles.length > 0) {
     await db.file.createMany({
-      data: tpl.files.map((f) => ({
+      data: seedFiles.map((f) => ({
         workspaceId: ws.id,
         path: f.path,
         content: f.content,

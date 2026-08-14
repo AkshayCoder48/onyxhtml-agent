@@ -843,3 +843,38 @@ Stage Summary:
 - Dev server persistence solved via double-fork daemon approach.
 - Cross-origin dev resource blocking fixed via `allowedDevOrigins` in next.config.ts.
 - All PRD acceptance criteria verified and met.
+
+---
+Task ID: fix-streaming-502-agentmd
+Agent: main
+Task: Fix 502 on button taps, fix "stuck on thinking" streaming UI bug, fix AI only generating files (not editing/testing/probing/summarizing), add AGENT.md to all OnyxHTML workspaces, force AI to read AGENT.md before any task.
+
+Work Log:
+- Investigated the codebase: read agent.ts, use-chat-stream.ts, chat-store.ts, chat-messages.tsx, tool-card.tsx, markdown.tsx, templates.ts, workspace routes, provider API, code-editor.tsx, preview-pane.tsx, streaming engine + dispatcher.
+- Created `/src/lib/agent-md.ts` — canonical AGENT.md content (OnyxHTML Agent Operating Manual) enforcing the PROBE → PLAN → EDIT → TEST → SUMMARIZE lifecycle. Includes tool reference, hard rules, and a workflow checklist.
+- Updated `/src/lib/templates.ts` — AGENT.md is now prepended to every template's file list (blank, landing, portfolio, docs). New workspaces always ship with AGENT.md.
+- Updated `/src/app/api/workspaces/route.ts` (POST) — seeds AGENT.md into every new workspace alongside template files.
+- Updated `/src/app/api/workspaces/[id]/route.ts` (GET) — lazy migration: auto-creates AGENT.md in existing workspaces that don't have it. Never overwrites user-edited AGENT.md.
+- Updated `/src/app/api/workspaces/[id]/files/route.ts` (GET list) — same lazy migration so AGENT.md appears in the file explorer for existing workspaces.
+- Updated `/src/lib/ai/agent.ts` — buildSystemPrompt now injects AGENT.md content at the VERY TOP of the system prompt (the model literally cannot avoid reading it). Loads the workspace's AGENT.md if it exists (respects user edits), falls back to canonical content. Added REMINDERS section enforcing: use edit_file not create_file, test after changes, summarize at end.
+- ROOT CAUSE of "stuck on thinking": The client created the assistant message with a local ID (e.g. `a_abc123`), but the server's stream events used the DB message's ID (e.g. `cmss...`). Every `appendTextDelta(messageId, delta)` call failed to find the message (because `patchMessage` returns the same array when the ID doesn't match) and silently dropped the update. The AI's response was persisted to the DB but never appeared in the UI during streaming — only after a page reload.
+- FIX: Added `renameMessage(oldId, newId)` to `/src/stores/chat-store.ts`. In `/src/hooks/use-chat-stream.ts` `consumeStream`, on the FIRST event that carries a server `messageId` different from the local `assistantId`, call `renameMessage(assistantId, evt.messageId)`. After that, all subsequent `text.delta` / `tool.start` / etc. events find the message by its new (server) ID and update it correctly.
+- React performance: Wrapped `MessageItem` in `React.memo` (`/src/components/chat/chat-messages.tsx`) so only the streaming message re-renders on deltas, not all messages. Used `useDeferredValue` in `MarkdownContent` (`/src/components/chat/markdown.tsx`) so expensive markdown parsing doesn't block paint. Added stable `useCallback` handlers so child components don't re-render unnecessarily.
+- Created missing `/src/app/api/providers/[id]/test/route.ts` — the `api.testProvider()` client method was calling a non-existent route, causing 404/502 when clicking Test in settings. Now properly tests provider connection.
+- Verified end-to-end with agent-browser:
+  1. Home page loads with zero errors.
+  2. AGENT.md visible in file explorer for existing "Test Terminal" workspace (lazy migration worked).
+  3. Opened AGENT.md — content is the full OnyxHTML Agent Operating Manual.
+  4. Sent "What is 2+2?" — response "2+2 equals 4." appeared in REAL-TIME during streaming (not just after reload). The "stuck on thinking" bug is FIXED.
+  5. Sent "Change the h1 text in index.html to say Welcome to OnyxHTML and verify with terminal_exec" — AI used edit_file (not create_file), then terminal_exec to test, then read_file to verify, then wrote a summary. All tool cards streamed live.
+  6. Sent "List all files in the workspace and tell me what you see" — AI used list_files (PROBE), provided detailed summary, acknowledged AGENT.md as "The operating manual for the OnyxHTML Agent".
+  7. Tested New Chat button, Settings button — no 502 errors, all API requests returned 200.
+  8. `bun run lint` passes clean (exit 0).
+
+Stage Summary:
+- AGENT.md is now in ALL OnyxHTML workspaces (new + existing) and is injected at the top of the system prompt so the AI is forced to read it before any task.
+- The AI now follows the PROBE → EDIT → TEST → SUMMARIZE workflow: it reads files before editing, uses edit_file (not create_file) for existing files, tests with terminal_exec, and writes a summary at the end.
+- The "stuck on thinking" streaming UI bug is FIXED — the root cause was a message ID mismatch between the client (local ID) and server (DB ID). The `renameMessage` reconciliation on the first stream event ensures all subsequent events find the correct message.
+- React performance improved: `React.memo` on MessageItem + `useDeferredValue` on MarkdownContent prevents unnecessary re-renders and keeps the main thread free to paint.
+- Missing `/api/providers/[id]/test` route created — fixes 404/502 when clicking Test in settings.
+- All fixes verified end-to-end with zero console errors and zero page errors.

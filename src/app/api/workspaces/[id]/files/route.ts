@@ -1,8 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { buildFileTree, safePath } from "@/lib/files";
+import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
 
 type Params = { params: Promise<{ id: string }> };
+
+// Lazy migration: ensure AGENT.md exists when the file tree is requested.
+// This makes AGENT.md visible in the file explorer for existing workspaces
+// that were created before AGENT.md was added to the templates.
+async function ensureAgentMd(workspaceId: string): Promise<void> {
+  try {
+    const existing = await db.file.findUnique({
+      where: { workspaceId_path: { workspaceId, path: AGENT_MD_FILENAME } },
+      select: { id: true },
+    });
+    if (existing) return;
+    await db.file.create({
+      data: {
+        workspaceId,
+        path: AGENT_MD_FILENAME,
+        content: AGENT_MD_CONTENT,
+        isBinary: false,
+      },
+    });
+  } catch {
+    // Race condition — safe to ignore.
+  }
+}
 
 // GET /api/workspaces/[id]/files
 //   - with ?path=<path> → single file (404 if not found)
@@ -33,7 +57,8 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
   }
 
-  // List all
+  // List all — ensure AGENT.md exists first so it shows up in the tree.
+  await ensureAgentMd(id);
   const files = await db.file.findMany({
     where: { workspaceId: id },
     orderBy: { path: "asc" },

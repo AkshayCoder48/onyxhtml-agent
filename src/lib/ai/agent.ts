@@ -8,6 +8,7 @@ import {
 // New canonical streaming event types (PRD §11). The OLD StreamEvent union
 // from @/lib/types is replaced by this richer, fine-grained set.
 import type { StreamEvent } from "@/lib/streaming/types";
+import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
 import {
   ChatMessage,
   getActiveProvider,
@@ -108,6 +109,15 @@ function buildConversationFromMessages(
 }
 
 // Build the system prompt with workspace context.
+//
+// CRITICAL: The AGENT.md operating manual is injected at the very TOP of the
+// system prompt. The model literally cannot avoid reading it — it is the
+// first thing in its context. The manual enforces the mandatory task
+// lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.
+//
+// If the workspace has a user-edited AGENT.md, we use that version (the user
+// may have customized the rules). Otherwise we fall back to the canonical
+// AGENT_MD_CONTENT from src/lib/agent-md.ts.
 function buildSystemPrompt(opts: {
   workspaceName: string;
   filePaths: string[];
@@ -115,18 +125,21 @@ function buildSystemPrompt(opts: {
   activeFile: string | null;
   activeFileContent: string | null;
   selectedFiles: string[];
+  agentMdContent: string | null;
 }): string {
   const tree = buildFileTree(opts.filePaths);
   const treeText = renderTree(tree, 0);
+  const agentMd = opts.agentMdContent ?? AGENT_MD_CONTENT;
+
   const parts: string[] = [
-    "You are an AI coding agent inside an HTML Workspace Editor. You can read, create, edit, and delete files in the user's workspace, and you can control the live preview (click, type, scroll, run JavaScript, inspect the DOM and console) to test the website. Always explain briefly what you're doing. Use file tools to make changes, then use browser tools to verify. Be concise. The workspace file tree is provided in the context.",
+    // ---- AGENT.md operating manual (injected FIRST so the model reads it) ----
+    agentMd,
     "",
-    "IMPORTANT NOTES ABOUT THE PREVIEW:",
-    "- The preview iframe ALWAYS shows the workspace entry file (index.html). It is already loaded — you do NOT need to call open_page or reload_page before interacting with the page.",
-    "- The terminal_exec tool is a REPL: it evaluates JavaScript in the preview's global scope and returns the value of the last expression. Use it to inspect the page state (e.g. document.title, document.querySelectorAll('h1').length, etc.).",
-    "- State persists across terminal_exec calls: use term.set('x', value) to save a value and term.get('x') to retrieve it later.",
-    "- The take_screenshot tool returns an SVG snapshot of the current viewport PLUS a text DOM snapshot — use the DOM snapshot for debugging if the screenshot is too large.",
+    "========================================================",
+    "AGENT.md ENDS HERE — workspace context follows.",
+    "========================================================",
     "",
+    // ---- Workspace context ----
     `Workspace: ${opts.workspaceName}`,
     `Entry file: ${opts.entryFile ?? "(none)"}`,
     "",
@@ -147,13 +160,14 @@ function buildSystemPrompt(opts: {
   }
   parts.push(
     "",
-    "Guidelines:",
-    "- Use list_files/read_file to understand the project before editing.",
-    "- Use edit_file for small, precise changes; use create_file/write_file for new files or full rewrites.",
-    "- After making changes, use terminal_exec or check_console to verify the page renders correctly. Do NOT call open_page first — the page is already loaded.",
-    "- Never include API keys, secrets, or sensitive data in your file edits.",
+    "REMINDERS (these override any contrary instinct):",
+    "- You ALREADY read AGENT.md above. Follow its lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.",
+    "- Do NOT generate files when an edit would do. edit_file is the default for existing files.",
+    "- Do NOT skip the TEST phase. After every meaningful change, call terminal_exec or take_screenshot to verify.",
+    "- Do NOT end the turn without a written SUMMARY of what you changed and how you verified it.",
+    "- The preview is already loaded with index.html. Do NOT call open_page first.",
     "- Keep explanations brief — one or two sentences before each action.",
-    "- Do NOT repeat the same tool call more than twice. If a tool returns an error, read the error message and adjust your approach instead of retrying."
+    "- Do NOT repeat the same tool call more than twice. If a tool errors, read the message and adjust."
   );
   return parts.join("\n");
 }
@@ -289,6 +303,14 @@ async function runAgentLoop(ctx: LoopCtx) {
     if (af) activeFileContent = af.content;
   }
 
+  // Load the workspace's AGENT.md (if it exists). The user may have edited
+  // it to customize the agent's behavior — we respect those edits. If the
+  // workspace doesn't have one yet, ensureAgentMd() in the workspaces API
+  // route will create it on next access, but we also fall back to the
+  // canonical AGENT_MD_CONTENT here so the system prompt always has it.
+  const agentMdRow = files.find((f) => f.path === AGENT_MD_FILENAME);
+  const agentMdContent = agentMdRow ? agentMdRow.content : null;
+
   const systemPrompt = buildSystemPrompt({
     workspaceName: workspace.name,
     filePaths,
@@ -296,6 +318,7 @@ async function runAgentLoop(ctx: LoopCtx) {
     activeFile,
     activeFileContent,
     selectedFiles,
+    agentMdContent,
   });
 
   // 2. Get active provider

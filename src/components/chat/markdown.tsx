@@ -50,51 +50,66 @@ export function MarkdownContent({
   content: string;
   onFileClick?: (path: string) => void;
 }) {
+  // useDeferredValue lets React render the markdown at LOW priority during
+  // streaming. The store still updates on every delta (immediate), but the
+  // expensive ReactMarkdown parse is deferred so it never blocks paint.
+  // This is NOT stream throttling — it's render scheduling (PRD §8 allows
+  // render scheduling; it forbids rAF/setTimeout as STREAM BATCHERS).
+  //
+  // Effect: during fast streaming, the raw text appears instantly (via the
+  // store update), and the formatted markdown catches up a frame or two
+  // later. The UI stays responsive — no "stuck on thinking" lag.
+  const deferredContent = React.useDeferredValue(content);
+
+  // Stable callback so the components prop doesn't change identity on every
+  // render (which would force ReactMarkdown to re-render even when content
+  // is unchanged).
+  const components = React.useMemo(
+    () => ({
+      code({ className, children, ...props }: any) {
+        const isInline = !className;
+        if (isInline) {
+          return (
+            <code className={className} {...props}>
+              {children}
+            </code>
+          );
+        }
+        return (
+          <CodeBlock className={className}>
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </CodeBlock>
+        );
+      },
+      a({ children, href, ...props }: any) {
+        // Render file paths (relative, no protocol) as in-app file openers
+        if (href && !/^https?:\/\//.test(href) && onFileClick) {
+          return (
+            <button
+              className="inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[12px] hover:bg-accent"
+              onClick={() => onFileClick(href)}
+              {...props}
+            >
+              <FileText className="size-3" />
+              {children}
+            </button>
+          );
+        }
+        return (
+          <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+            {children}
+          </a>
+        );
+      },
+    }),
+    [onFileClick]
+  );
+
   return (
     <div className="chat-markdown">
-      <ReactMarkdown
-        components={{
-          code({ className, children, ...props }) {
-            const isInline = !className;
-            if (isInline) {
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            }
-            return (
-              <CodeBlock className={className}>
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              </CodeBlock>
-            );
-          },
-          a({ children, href, ...props }) {
-            // Render file paths (relative, no protocol) as in-app file openers
-            if (href && !/^https?:\/\//.test(href) && onFileClick) {
-              return (
-                <button
-                  className="inline-flex items-center gap-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[12px] hover:bg-accent"
-                  onClick={() => onFileClick(href)}
-                  {...(props as object)}
-                >
-                  <FileText className="size-3" />
-                  {children}
-                </button>
-              );
-            }
-            return (
-              <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
-        {content}
-      </ReactMarkdown>
+      <ReactMarkdown components={components}>{deferredContent}</ReactMarkdown>
     </div>
   );
 }

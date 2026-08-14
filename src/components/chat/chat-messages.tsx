@@ -166,10 +166,35 @@ export function ChatMessages() {
   );
 }
 
-function MessageItem({ message, streaming }: { message: Message; streaming: boolean }) {
+// Memoized MessageItem — only re-renders when its own `message` reference
+// changes (or `streaming` changes). This is the KEY performance fix for the
+// "stuck on thinking" visual lag: without memo, EVERY MessageItem re-renders
+// on every text delta (because the `messages` array reference changes in the
+// parent). With memo, only the streaming message re-renders; all other
+// messages skip re-rendering entirely, freeing the main thread to paint.
+const MessageItem = React.memo(function MessageItem({
+  message,
+  streaming,
+}: {
+  message: Message;
+  streaming: boolean;
+}) {
   const openFile = useWorkspaceStore((s) => s.openTab);
   const setActiveFile = useWorkspaceStore((s) => s.setActiveFile);
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
+
+  // Stable callbacks so child components (ToolCard, MarkdownContent) don't
+  // re-render just because MessageItem re-rendered with a new inline fn.
+  const handleOpenFile = React.useCallback(
+    (path: string) => {
+      setActiveFile(path);
+      openFile(path);
+    },
+    [setActiveFile, openFile]
+  );
+  const handleOpenConsole = React.useCallback(() => {
+    setConsoleOpen(true);
+  }, [setConsoleOpen]);
 
   if (message.role === "user") {
     // Find the content segment(s)
@@ -208,10 +233,7 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
             <div key={segKey} className="animate-fade-in">
               <MarkdownContent
                 content={seg.content}
-                onFileClick={(path) => {
-                  setActiveFile(path);
-                  openFile(path);
-                }}
+                onFileClick={handleOpenFile}
               />
             </div>
           );
@@ -221,11 +243,8 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
             <ToolCard
               key={segKey}
               seg={seg}
-              onOpenFile={(path) => {
-                setActiveFile(path);
-                openFile(path);
-              }}
-              onOpenConsole={() => setConsoleOpen(true)}
+              onOpenFile={handleOpenFile}
+              onOpenConsole={handleOpenConsole}
             />
           );
         }
@@ -248,7 +267,7 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
       )}
     </div>
   );
-}
+});
 
 function EmptyChat() {
   const suggestions = [
