@@ -1,11 +1,13 @@
 import { db } from "@/lib/db";
-import { buildFileTree, findEntryFile } from "@/lib/files";
+import { buildFileTree, findEntryFile, safePath } from "@/lib/files";
 import { parseJSON, stringifyJSON } from "@/lib/settings";
 import {
   MessageSegment,
   Message as MessageType,
-  StreamEvent,
 } from "@/lib/types";
+// New canonical streaming event types (PRD §11). The OLD StreamEvent union
+// from @/lib/types is replaced by this richer, fine-grained set.
+import type { StreamEvent } from "@/lib/streaming/types";
 import {
   ChatMessage,
   getActiveProvider,
@@ -230,7 +232,7 @@ export async function runAgentAsReadableStream(
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         try {
-          send({ type: "error", content: msg });
+          send({ type: "stream.error", messageId: "", content: msg });
         } catch {}
         sendDone();
       }
@@ -263,7 +265,7 @@ async function runAgentLoop(ctx: LoopCtx) {
     where: { id: ctx.workspaceId },
   });
   if (!workspace) {
-    ctx.send({ type: "error", content: "Workspace not found" });
+    ctx.send({ type: "stream.error", messageId: "", content: "Workspace not found" });
     ctx.sendDone();
     return;
   }
@@ -299,7 +301,7 @@ async function runAgentLoop(ctx: LoopCtx) {
   // 2. Get active provider
   const provider = await getActiveProvider();
   if (!provider) {
-    ctx.send({ type: "error", content: "No active provider configured. Add one in Settings → Providers." });
+    ctx.send({ type: "stream.error", messageId: "", content: "No active provider configured. Add one in Settings → Providers." });
     ctx.sendDone();
     return;
   }
@@ -310,7 +312,7 @@ async function runAgentLoop(ctx: LoopCtx) {
     orderBy: { createdAt: "asc" },
   });
   if (dbMessages.length === 0) {
-    ctx.send({ type: "error", content: "Chat has no messages" });
+    ctx.send({ type: "stream.error", messageId: "", content: "Chat has no messages" });
     ctx.sendDone();
     return;
   }
@@ -327,10 +329,15 @@ async function runAgentLoop(ctx: LoopCtx) {
     }
   }
   if (!assistantRow || assistantRow.role !== "assistant") {
-    ctx.send({ type: "error", content: "No assistant message to stream into" });
+    ctx.send({ type: "stream.error", messageId: "", content: "No assistant message to stream into" });
     ctx.sendDone();
     return;
   }
+
+  // Stable messageId for the entire streaming turn (PRD §10). Every event
+  // emitted by this run carries this id so the client can route deltas to
+  // the correct assistant message without ambiguity.
+  const messageId = assistantRow.id;
 
   let segments: MessageSegment[] = parseJSON<MessageSegment[]>(
     assistantRow.segments,
@@ -390,14 +397,22 @@ async function runAgentLoop(ctx: LoopCtx) {
         seg.status = r.error ? "error" : "success";
         seg.result = r.result;
         seg.error = r.error;
+        // Emit the new granular tool.result + tool.complete events so the
+        // client's ToolStore transitions the card out of the running state.
         ctx.send({
-          type: "tool_result",
-          callId: r.callId,
+          type: "tool.result",
+          messageId,
+          toolCallId: r.callId,
           status: seg.status,
           result: r.result,
           error: r.error,
           label: seg.label,
           detail: seg.detail,
+        });
+        ctx.send({
+          type: "tool.complete",
+          messageId,
+          toolCallId: r.callId,
         });
         // Append tool message to conversation
         const payload = r.error ? { error: r.error } : r.result ?? {};
@@ -432,15 +447,19 @@ async function runAgentLoop(ctx: LoopCtx) {
   // (so /continue calls don't collide with the original run's callIds).
   const runTag = Math.random().toString(36).slice(2, 6);
   let callIdSeq = 0;
+
+  // Emit stream.start ONCE at the beginning of the agent run so the client
+  // knows the stream is live (PRD §11 StreamCompleteEvent / lifecycle).
+  ctx.send({ type: "stream.start", messageId });
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let reasoningText = "";
     let contentText = "";
     const toolCalls: ToolCallAccum[] = [];
     const roundCallIdMap = new Map<string, string>();
-    // Tracks whether we've already emitted a tool_call SSE event for a given
-    // accumulated callId, so we only emit on the *first* delta and then patch
-    // the same segment on subsequent deltas (true streaming display).
-    const emittedToolCallIds = new Set<string>();
+    // Tracks whether we've already emitted a tool.start event for a given
+    // callId, so we emit it exactly once and then stream argument deltas.
+    const startedToolCallIds = new Set<string>();
     let hadError = false;
     let errorMsg = "";
 
@@ -450,11 +469,15 @@ async function runAgentLoop(ctx: LoopCtx) {
         tools: toolDefs,
       })) {
         if (ev.type === "reasoning_content") {
+          // PRD §7: emit the delta IMMEDIATELY. No accumulation, no batching.
           reasoningText += ev.content;
-          ctx.send({ type: "reasoning_content", content: ev.content });
+          ctx.send({ type: "thinking.delta", messageId, delta: ev.content });
         } else if (ev.type === "content") {
+          // PRD §7, §12: emit text.delta immediately — character-by-character
+          // as the provider sends it. The client appends to the streaming
+          // content segment.
           contentText += ev.content;
-          ctx.send({ type: "content", content: ev.content });
+          ctx.send({ type: "text.delta", messageId, delta: ev.content });
         } else if (ev.type === "tool_call_delta") {
           // Remap the provider's callId to a globally-unique id for this round.
           let mapped = roundCallIdMap.get(ev.callId);
@@ -475,29 +498,41 @@ async function runAgentLoop(ctx: LoopCtx) {
             });
           }
 
-          // Stream the tool_call to the client as it accumulates so the UI
-          // can show the arguments being written character-by-character.
           const accum = toolCalls.find((t) => t.callId === mapped)!;
           if (accum.name) {
-            // Best-effort partial parse for the `arguments` field. If the JSON
-            // is incomplete we send an empty object — the client will rely on
-            // `argumentsText` for live display until the call completes.
-            let partialArgs: Record<string, unknown> = {};
-            try {
-              partialArgs = JSON.parse(accum.arguments);
-            } catch {
-              // not yet complete JSON — that's fine during streaming
+            // PRD §13, §14: emit tool.start exactly once (when the name first
+            // arrives), then stream tool.arguments.delta for every subsequent
+            // argument fragment. The client ToolStore accumulates the raw
+            // arguments string and best-effort parses it for display.
+            if (!startedToolCallIds.has(accum.callId)) {
+              startedToolCallIds.add(accum.callId);
+              ctx.send({
+                type: "tool.start",
+                messageId,
+                toolCallId: accum.callId,
+                tool: accum.name,
+                label: getToolLabel(accum.name),
+              });
+              // If the first delta already carried argument bytes, emit them
+              // as the first arguments.delta so the client sees them.
+              if (accum.arguments) {
+                ctx.send({
+                  type: "tool.arguments.delta",
+                  messageId,
+                  toolCallId: accum.callId,
+                  delta: accum.arguments,
+                });
+              }
+            } else if (ev.argumentsDelta) {
+              // Subsequent argument fragments — emit the DELTA, not the
+              // accumulated text. The client appends.
+              ctx.send({
+                type: "tool.arguments.delta",
+                messageId,
+                toolCallId: accum.callId,
+                delta: ev.argumentsDelta,
+              });
             }
-            ctx.send({
-              type: "tool_call",
-              tool: accum.name,
-              arguments: partialArgs,
-              argumentsText: accum.arguments,
-              callId: accum.callId,
-              label: getToolLabel(accum.name),
-              status: "running",
-            });
-            emittedToolCallIds.add(accum.callId);
           }
         } else if (ev.type === "error") {
           hadError = true;
@@ -522,12 +557,12 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: assistantRow.id },
         data: { segments: stringifyJSON(segments) },
       });
-      ctx.send({ type: "error", content: errorMsg });
+      ctx.send({ type: "stream.error", messageId, content: errorMsg });
       ctx.sendDone();
       return;
     }
 
-    // Merge accumulated reasoning + content into segments
+    // Merge accumulated reasoning + content into segments (for persistence)
     if (reasoningText) {
       segments = mergeSegment(segments, { type: "thinking", content: reasoningText });
     }
@@ -545,7 +580,7 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: ctx.chatId },
         data: { updatedAt: new Date() },
       });
-      ctx.send({ type: "done" });
+      ctx.send({ type: "stream.complete", messageId });
       ctx.sendDone();
       return;
     }
@@ -582,7 +617,7 @@ async function runAgentLoop(ctx: LoopCtx) {
           ? "⚠️ One tool call was truncated (the model ran out of tokens mid-argument) and has been skipped."
           : `⚠️ ${droppedToolCalls.length} tool calls were truncated (the model ran out of tokens mid-argument) and have been skipped.`;
       segments = mergeSegment(segments, { type: "content", content: `\n\n${note}\n` });
-      ctx.send({ type: "content", content: `\n\n${note}\n` });
+      ctx.send({ type: "text.delta", messageId, delta: `\n\n${note}\n` });
     }
     const toolCallsToProcess = validToolCalls;
 
@@ -598,7 +633,7 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: ctx.chatId },
         data: { updatedAt: new Date() },
       });
-      ctx.send({ type: "done" });
+      ctx.send({ type: "stream.complete", messageId });
       ctx.sendDone();
       return;
     }
@@ -628,81 +663,92 @@ async function runAgentLoop(ctx: LoopCtx) {
       const detail = getToolDetail(tc.name, args);
       const isBrowser = isBrowserTool(tc.name);
 
-      if (isBrowser) {
-        // If we already emitted a streaming tool_call for this id, we don't
-        // need to re-emit — just ensure the segment exists in `segments`
-        // with running status. Otherwise emit one now.
-        if (!emittedToolCallIds.has(tc.callId)) {
-          ctx.send({
-            type: "tool_call",
-            tool: tc.name,
-            arguments: args,
-            argumentsText: tc.arguments,
-            callId: tc.callId,
-            label,
-            detail,
-            status: "running",
-          });
-          emittedToolCallIds.add(tc.callId);
-        }
-        // Make sure the segment exists in our persisted segments array.
-        const existingSegIdx = segments.findIndex(
-          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
-            s.type === "tool_call" && s.callId === tc.callId
-        );
-        if (existingSegIdx < 0) {
-          segments.push({
-            type: "tool_call",
-            tool: tc.name,
-            arguments: args,
-            argumentsText: tc.arguments,
-            callId: tc.callId,
-            status: "running",
-            label,
-            detail,
-          });
-        }
-        browserCallIds.push(tc.callId);
-        // We do NOT append a tool message yet — that happens on /continue
-      } else {
-        // For file tools, emit a final tool_call with the complete parsed
-        // arguments (replaces the streamed partial). This also handles the
-        // case where the tool name was empty during streaming.
-        ctx.send({
+      // Emit tool.execute to transition the card from "generating" →
+      // "executing" (PRD §15). For browser tools this is the signal that
+      // the client should now run the tool against the preview iframe.
+      // For file tools it marks the start of server-side execution.
+      ctx.send({ type: "tool.execute", messageId, toolCallId: tc.callId });
+
+      // Ensure a persisted tool_call segment exists (for hydration after refresh).
+      const existingSegIdx = segments.findIndex(
+        (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+          s.type === "tool_call" && s.callId === tc.callId
+      );
+      if (existingSegIdx < 0) {
+        segments.push({
           type: "tool_call",
           tool: tc.name,
           arguments: args,
           argumentsText: tc.arguments,
           callId: tc.callId,
+          status: "running",
           label,
           detail,
-          status: "running",
         });
-        emittedToolCallIds.add(tc.callId);
+      } else {
+        const seg = segments[existingSegIdx] as Extract<MessageSegment, { type: "tool_call" }>;
+        seg.arguments = args;
+        seg.argumentsText = tc.arguments;
+        seg.detail = detail;
+        seg.label = label;
+      }
 
-        // Add segment in running status (or update if streaming already created it)
-        const existingSegIdx = segments.findIndex(
-          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
-            s.type === "tool_call" && s.callId === tc.callId
-        );
-        let segIdx: number;
-        if (existingSegIdx < 0) {
-          segIdx = segments.push({
-            type: "tool_call",
-            tool: tc.name,
-            arguments: args,
-            argumentsText: tc.arguments,
-            callId: tc.callId,
-            status: "running",
-            label,
-            detail,
-          }) - 1;
-        } else {
-          segIdx = existingSegIdx;
-          const seg = segments[segIdx] as Extract<MessageSegment, { type: "tool_call" }>;
-          seg.arguments = args;
-          seg.argumentsText = tc.arguments;
-          seg.detail = detail;
+      if (isBrowser) {
+        // Browser tools are executed client-side against the preview iframe.
+        // We do NOT execute them here — we collect their callIds and emit
+        // browser.tools_pending so the client runs them, then calls /continue.
+        browserCallIds.push(tc.callId);
+        // We do NOT append a tool message yet — that happens on /continue
+      } else {
+        // ---- File tool: stream the file content LIVE before writing (PRD §20, §21) ----
+        //
+        // For tools that write file content (create_file, write_file, edit_file,
+        // replace_content), emit file.start → file.delta* → file.complete so the
+        // editor shows the file being generated character-by-character. We emit
+        // the deltas from the argument content BEFORE executing the tool, then
+        // execute the actual DB write. This gives the user real-time feedback.
+        const filePathForStream = pickFilePathForStreaming(tc.name, args);
+        if (filePathForStream) {
+          const contentToStream = pickFileContentForStreaming(tc.name, args);
+          const operation: "create" | "write" | "append" | "replace" | "patch" | "delete" =
+            tc.name === "create_file"
+              ? "create"
+              : tc.name === "edit_file"
+              ? "patch"
+              : tc.name === "replace_content"
+              ? "replace"
+              : "write";
+          ctx.send({
+            type: "file.start",
+            messageId,
+            toolCallId: tc.callId,
+            path: filePathForStream,
+            operation,
+          });
+          if (contentToStream) {
+            // Stream in ~256-byte chunks. This is NOT artificial throttling of
+            // the AI stream — the AI has already produced this content. We chunk
+            // it only so the editor can apply incremental updates without
+            // blocking the main thread on a single huge insertion (PRD §28
+            // backpressure, §23 prevent editor flickering).
+            const CHUNK = 256;
+            for (let i = 0; i < contentToStream.length; i += CHUNK) {
+              ctx.send({
+                type: "file.delta",
+                messageId,
+                toolCallId: tc.callId,
+                path: filePathForStream,
+                delta: contentToStream.slice(i, i + CHUNK),
+              });
+            }
+          }
+          ctx.send({
+            type: "file.complete",
+            messageId,
+            toolCallId: tc.callId,
+            path: filePathForStream,
+            bytes: contentToStream ? contentToStream.length : 0,
+          });
         }
 
         // Execute file tool server-side
@@ -717,22 +763,30 @@ async function runAgentLoop(ctx: LoopCtx) {
           result = { error: errorMsg };
         }
 
-        // Update segment
-        const seg = segments[segIdx] as Extract<MessageSegment, { type: "tool_call" }>;
-        seg.status = status;
-        seg.result = result;
-        seg.error = errorMsg;
+        // Update persisted segment
+        const segIdx2 = segments.findIndex(
+          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+            s.type === "tool_call" && s.callId === tc.callId
+        );
+        if (segIdx2 >= 0) {
+          const seg = segments[segIdx2] as Extract<MessageSegment, { type: "tool_call" }>;
+          seg.status = status;
+          seg.result = result;
+          seg.error = errorMsg;
+        }
 
-        // Emit tool_result
+        // Emit tool.result + tool.complete (PRD §13 lifecycle)
         ctx.send({
-          type: "tool_result",
-          callId: tc.callId,
+          type: "tool.result",
+          messageId,
+          toolCallId: tc.callId,
           status,
           result,
           error: errorMsg,
           label,
           detail,
         });
+        ctx.send({ type: "tool.complete", messageId, toolCallId: tc.callId });
 
         // Append tool message to conversation
         const payload = status === "error" ? { error: errorMsg ?? "tool error" } : result;
@@ -753,9 +807,10 @@ async function runAgentLoop(ctx: LoopCtx) {
     // If there are pending browser tools → pause and resume
     if (browserCallIds.length > 0) {
       ctx.send({
-        type: "browser_tools_pending",
+        type: "browser.tools_pending",
+        messageId,
         callIds: browserCallIds,
-      } as unknown as StreamEvent);
+      });
       ctx.sendDone();
       return;
     }
@@ -763,7 +818,7 @@ async function runAgentLoop(ctx: LoopCtx) {
     // Otherwise loop again (file tools ran; model may produce more)
   }
 
-  // Max rounds exceeded — emit done (not error) so the spinner stops.
+  // Max rounds exceeded — emit stream.complete (not error) so the spinner stops.
   // The model has been working for 25 rounds; that's a legitimate stopping
   // point, not a failure. Persist what we have and finish gracefully.
   await db.message.update({
@@ -775,12 +830,62 @@ async function runAgentLoop(ctx: LoopCtx) {
     data: { updatedAt: new Date() },
   });
   ctx.send({
-    type: "content",
-    content:
+    type: "text.delta",
+    messageId,
+    delta:
       "\n\n_I've reached the maximum number of reasoning rounds for this turn. If you'd like me to continue, please send another message._\n",
   });
-  ctx.send({ type: "done" });
+  ctx.send({ type: "stream.complete", messageId });
   ctx.sendDone();
+}
+
+// ---------- File streaming helpers ----------
+//
+// Determine which file-writing tools should stream their content to the live
+// editor, and extract the (path, content) pair from the parsed arguments.
+
+function pickFilePathForStreaming(
+  toolName: string,
+  args: Record<string, unknown>
+): string | null {
+  try {
+    switch (toolName) {
+      case "create_file":
+      case "write_file":
+      case "edit_file":
+      case "replace_content":
+        return safePath(String(args.path ?? "")) || null;
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function pickFileContentForStreaming(
+  toolName: string,
+  args: Record<string, unknown>
+): string | null {
+  try {
+    switch (toolName) {
+      case "create_file":
+      case "write_file":
+        return String(args.content ?? "");
+      case "edit_file": {
+        // For edit_file we stream the NEW content (what will replace the old).
+        return String(args.newContent ?? "");
+      }
+      case "replace_content": {
+        // For replace_content we stream the replacement text.
+        return String(args.replace ?? "");
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
 }
 
 // Merge a thinking/content segment, folding into the previous one if same type.

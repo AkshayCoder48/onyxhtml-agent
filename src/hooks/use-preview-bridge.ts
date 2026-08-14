@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import { useBrowserStore } from "@/stores/browser-store";
+import { useToolStore } from "@/stores/tool-store";
 
 // Bridge for sending browser-automation commands to the preview iframe and
 // receiving results. Uses postMessage with request/response correlation by
@@ -55,12 +57,36 @@ export function usePreviewBridge(
       if (!data || typeof data !== "object") return;
       if (data.source !== "preview") return;
 
-      if (data.kind === "console" && cbRef.current.onConsole) {
-        cbRef.current.onConsole({
-          level: data.level,
-          args: data.args ?? [],
-          time: Date.now(),
-        });
+      if (data.kind === "console") {
+        // Route to the optional ConsoleDrawer callback (always).
+        if (cbRef.current.onConsole) {
+          cbRef.current.onConsole({
+            level: data.level,
+            args: data.args ?? [],
+            time: Date.now(),
+          });
+        }
+        // PRD §18: if the console message carries a callId (forwarded live
+        // from terminal_exec / run_javascript), also push it into the
+        // BrowserStore + ToolStore so the ToolCard renders live console
+        // output as it happens.
+        if (typeof data.callId === "string" && data.callId) {
+          const args = Array.isArray(data.args)
+            ? data.args.map((a: unknown) => String(a))
+            : [];
+          useBrowserStore.getState().add({
+            toolCallId: data.callId,
+            level: data.level,
+            args,
+            time: typeof data.time === "number" ? data.time : Date.now(),
+          });
+          useToolStore.getState().addConsoleLine(
+            data.callId,
+            data.level,
+            args,
+            typeof data.time === "number" ? data.time : Date.now()
+          );
+        }
       } else if (data.kind === "error" && cbRef.current.onError) {
         cbRef.current.onError({
           message: data.message,
@@ -127,3 +153,4 @@ export function usePreviewBridge(
 
   return { execute };
 }
+

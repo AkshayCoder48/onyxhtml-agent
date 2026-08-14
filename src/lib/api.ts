@@ -9,7 +9,6 @@ import type {
   Message,
   Provider,
   ProviderInput,
-  StreamEvent,
   Workspace,
 } from "./types";
 
@@ -191,12 +190,16 @@ export const api = {
 
   /* --------------------------- AI Streaming --------------------------- */
 
-  // Returns an async generator of StreamEvent from an SSE response.
-  streamMessage: async function* (
+  // Fetch the SSE stream as a raw ReadableStream<Uint8Array>. The caller
+  // passes this to the new StreamEngine (lib/streaming/engine.ts), which
+  // decodes bytes across chunk boundaries and parses SSE frames into the
+  // canonical StreamEvent types. This replaces the old parseSSE helper that
+  // lived in this file (PRD §3.1 — delete the old streaming parser).
+  streamMessage: async (
     chatId: string,
     body: SendMessageBody,
     signal?: AbortSignal
-  ): AsyncGenerator<StreamEvent> {
+  ): Promise<ReadableStream<Uint8Array>> => {
     const res = await fetch(`/api/chats/${chatId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -213,14 +216,14 @@ export const api = {
       }
       throw new Error(detail);
     }
-    yield* parseSSE(res.body);
+    return res.body as ReadableStream<Uint8Array>;
   },
 
-  streamContinue: async function* (
+  streamContinue: async (
     chatId: string,
     body: ContinueBody,
     signal?: AbortSignal
-  ): AsyncGenerator<StreamEvent> {
+  ): Promise<ReadableStream<Uint8Array>> => {
     const res = await fetch(`/api/chats/${chatId}/messages/continue`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -237,16 +240,16 @@ export const api = {
       }
       throw new Error(detail);
     }
-    yield* parseSSE(res.body);
+    return res.body as ReadableStream<Uint8Array>;
   },
 
   // Re-stream the assistant response for the last user message in the chat.
   // The server deletes the previous assistant turn + any tool messages and
   // starts a fresh agent run.
-  streamRegenerate: async function* (
+  streamRegenerate: async (
     chatId: string,
     signal?: AbortSignal
-  ): AsyncGenerator<StreamEvent> {
+  ): Promise<ReadableStream<Uint8Array>> => {
     const res = await fetch(`/api/chats/${chatId}/messages/regenerate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -262,7 +265,7 @@ export const api = {
       }
       throw new Error(detail);
     }
-    yield* parseSSE(res.body);
+    return res.body as ReadableStream<Uint8Array>;
   },
 
   /* ----------------------------- Providers ----------------------------- */
@@ -303,69 +306,3 @@ export const api = {
       body: JSON.stringify(body),
     }),
 };
-
-/* ------------------------------ helpers ------------------------------ */
-
-async function* parseSSE(
-  stream: ReadableStream<Uint8Array>
-): AsyncGenerator<StreamEvent> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE messages separated by double newline
-      let idx: number;
-      while ((idx = buffer.indexOf("\n\n")) >= 0) {
-        const raw = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        const lines = raw.split("\n");
-        let dataStr = "";
-        for (const line of lines) {
-          if (line.startsWith("data:")) {
-            dataStr += line.slice(5).trimStart();
-          } else if (line.startsWith("data: ")) {
-            dataStr += line.slice(6);
-          }
-        }
-        if (!dataStr) continue;
-        if (dataStr === "[DONE]") return;
-        try {
-          const evt = JSON.parse(dataStr) as StreamEvent;
-          yield evt;
-        } catch {
-          // ignore malformed line
-        }
-      }
-    }
-    // flush trailing
-    if (buffer.trim()) {
-      const lines = buffer.split("\n");
-      let dataStr = "";
-      for (const line of lines) {
-        if (line.startsWith("data:")) {
-          dataStr += line.slice(5).trimStart();
-        }
-      }
-      if (dataStr && dataStr !== "[DONE]") {
-        try {
-          const evt = JSON.parse(dataStr) as StreamEvent;
-          yield evt;
-        } catch {
-          // ignore
-        }
-      }
-    }
-  } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // ignore
-    }
-  }
-}

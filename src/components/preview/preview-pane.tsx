@@ -428,12 +428,28 @@ const BRIDGE_SCRIPT = `
           }
           var term = window.__term;
           term.history.push(code);
-          // Capture console output for this call only.
+          // Capture console output for this call only. Each captured call is
+          // ALSO forwarded to the parent LIVE (with the callId) so the
+          // ToolCard can render streaming console output as it happens
+          // (PRD §18 "Streaming output"). The parent's use-preview-bridge
+          // routes these to the BrowserStore → ToolStore.
           var captured = [];
           var origLog = console.log.bind(console);
           var origInfo = console.info.bind(console);
           var origWarn = console.warn.bind(console);
           var origErr = console.error.bind(console);
+          var forwardLive = function(level, args){
+            try {
+              parent.postMessage({
+                source: "preview",
+                kind: "console",
+                callId: callId,
+                level: level,
+                args: args,
+                time: Date.now()
+              }, "*");
+            } catch(e){}
+          };
           var capture = function(level){ return function(){
             try {
               var a = Array.prototype.slice.call(arguments);
@@ -443,6 +459,8 @@ const BRIDGE_SCRIPT = `
                 return String(x);
               });
               captured.push({ level: level, args: safe });
+              // Forward LIVE so the ToolCard streams the console output.
+              forwardLive(level, safe);
             } catch(e){}
             return level === "log" ? origLog.apply(console, arguments)
               : level === "info" ? origInfo.apply(console, arguments)

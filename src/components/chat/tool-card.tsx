@@ -10,11 +10,15 @@ import {
   CircleSlash,
   FileText,
   Terminal,
+  Play,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { TOOL_LABELS, type MessageSegment } from "@/lib/types";
 import { CopyButton } from "./markdown";
+import { useTool } from "@/stores/tool-store";
+import { useBrowserConsole } from "@/stores/browser-store";
+import type { ToolCardState } from "@/lib/streaming/types";
 
 type ToolSeg = Extract<MessageSegment, { type: "tool_call" }>;
 
@@ -55,6 +59,17 @@ const FILE_TOOLS = new Set([
   "create_folder",
 ]);
 
+// Map the ToolStore's ToolCardState to a human label + color (PRD §15).
+const STATE_LABEL: Record<ToolCardState, string> = {
+  generating: "Generating",
+  ready: "Ready",
+  executing: "Executing",
+  streaming: "Streaming",
+  success: "Success",
+  error: "Error",
+  cancelled: "Cancelled",
+};
+
 export function ToolCard({
   seg,
   onOpenFile,
@@ -64,34 +79,53 @@ export function ToolCard({
   onOpenFile?: (path: string) => void;
   onOpenConsole?: () => void;
 }) {
+  // Subscribe to the live ToolStore state for this specific callId. Only this
+  // card re-renders when arguments stream in — not every tool in the message
+  // (PRD §36 React Performance Requirements). Falls back to the persisted
+  // segment when the tool isn't in the store (e.g. a hydrated message after
+  // refresh, or a legacy message).
+  const liveTool = useTool(seg.callId);
+  const consoleLines = useBrowserConsole(seg.callId);
+
   const [open, setOpen] = React.useState(false);
   const [showDetails, setShowDetails] = React.useState(false);
-  const label = TOOL_LABELS[seg.tool as keyof typeof TOOL_LABELS] ?? seg.tool;
 
-  const status = seg.status ?? "running";
-  const argFile = pickFileArg(seg.tool, seg.arguments);
-  const argTarget = pickTargetArg(seg.tool, seg.arguments);
-  const isFileTool = FILE_TOOLS.has(seg.tool);
-  const isBrowserTool = BROWSER_TOOLS.has(seg.tool);
+  // Derive display values: prefer live ToolStore, fall back to persisted seg.
+  const tool = liveTool?.tool ?? seg.tool;
+  const label =
+    TOOL_LABELS[tool as keyof typeof TOOL_LABELS] ?? tool;
+  const rawArguments = liveTool?.rawArguments ?? seg.argumentsText ?? "";
+  const parsedArgs = liveTool?.parsedArguments ?? seg.arguments ?? {};
+  const state: ToolCardState = liveTool?.state ?? stateFromSegStatus(seg.status);
+  const result = liveTool?.result ?? seg.result;
+  const error = liveTool?.error ?? seg.error;
+  const progressMessage = liveTool?.progressMessage;
+  const progress = liveTool?.progress;
 
-  // Auto-expand the card while the tool is streaming/running so the user
-  // can watch the arguments being written.
+  const argFile = pickFileArg(tool, parsedArgs);
+  const argTarget = pickTargetArg(tool, parsedArgs);
+  const isFileTool = FILE_TOOLS.has(tool);
+  const isBrowserTool = BROWSER_TOOLS.has(tool);
+
+  // Auto-expand while generating/executing so the user watches args stream in.
   React.useEffect(() => {
-    if (status === "running") {
+    if (state === "generating" || state === "executing" || state === "streaming") {
       setOpen(true);
-    } else if (status === "success" || status === "error" || status === "cancelled") {
-      // Collapse after a short delay once finished.
-      const t = setTimeout(() => setOpen(false), 300);
+    } else if (state === "success" || state === "error" || state === "cancelled") {
+      const t = setTimeout(() => setOpen(false), 400);
       return () => clearTimeout(t);
     }
-  }, [status]);
+  }, [state]);
 
-  // The streaming raw text — used while the tool is running and the JSON
-  // arguments may still be incomplete. Once the call completes we show the
-  // parsed arguments instead.
-  const streamingText = seg.argumentsText ?? "";
-  const hasStreamingText = streamingText.length > 0;
-  const showStreamingView = status === "running" && hasStreamingText;
+  // The streaming raw text — shown while arguments are still arriving.
+  const hasStreamingText = rawArguments.length > 0;
+  const showStreamingView =
+    (state === "generating" || state === "executing" || state === "streaming") &&
+    hasStreamingText;
+
+  // Is this a terminal/browser-console tool that should show live console output?
+  const isConsoleTool =
+    tool === "terminal_exec" || tool === "run_javascript" || tool === "run_test";
 
   return (
     <div className="my-1.5 rounded-lg border bg-card">
@@ -104,33 +138,28 @@ export function ToolCard({
         ) : (
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
         )}
-        <StatusIcon status={status} />
+        <StateIcon state={state} />
         <span className="font-medium">{label}</span>
-        {(seg.label || argFile || argTarget) && (
+        {(argFile || argTarget) && (
           <span className="truncate text-muted-foreground">
-            {seg.label ?? argFile ?? argTarget}
+            {argFile ?? argTarget}
           </span>
         )}
-        {showStreamingView && (
-          <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-            <span className="inline-block size-1 animate-pulse-soft rounded-full bg-accent-strong" />
-            streaming
-          </span>
-        )}
+        <span className="ml-auto">
+          <StateBadge state={state} />
+        </span>
       </button>
       {open && (
         <div className="space-y-2 border-t px-2.5 py-2 text-xs">
+          {/* Live streaming arguments view (PRD §14, §16) */}
           {showStreamingView ? (
-            // Live streaming view — show the raw arguments text as it's
-            // written by the model. This is the "no instant preview" mode
-            // the user asked for: the card builds up character by character.
             <div>
               <div className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
                 <Loader2 className="size-2.5 animate-spin" />
                 Writing arguments…
               </div>
               <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-[11px] font-mono whitespace-pre-wrap break-words">
-                {streamingText}
+                {rawArguments}
                 <span className="ml-0.5 inline-block h-3 w-1 animate-pulse-soft bg-accent-strong align-text-bottom" />
               </pre>
             </div>
@@ -140,10 +169,62 @@ export function ToolCard({
                 ["Tool", label],
                 ...(argFile ? ([["File", argFile]] as [string, string][]) : []),
                 ...(argTarget ? ([["Target", argTarget]] as [string, string][]) : []),
-                ["Status", status],
-                ...(seg.detail ? ([["Detail", seg.detail]] as [string, string][]) : []),
+                ["State", STATE_LABEL[state]],
+                ...((liveTool?.detail || seg.detail)
+                  ? ([["Detail", liveTool?.detail ?? seg.detail!]] as [string, string][])
+                  : []),
               ]}
             />
+          )}
+
+          {/* Progress (PRD §39) */}
+          {(state === "executing" || state === "streaming") &&
+            (progressMessage || typeof progress === "number") && (
+              <div className="rounded border bg-muted/40 p-2">
+                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" />
+                  {progressMessage ?? "Working…"}
+                </div>
+                {typeof progress === "number" && (
+                  <div className="mt-1.5 h-1 overflow-hidden rounded bg-muted">
+                    <div
+                      className="h-full bg-accent-strong transition-all"
+                      style={{ width: `${Math.round(progress * 100)}%` }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+          {/* Live browser console output (PRD §18) */}
+          {isConsoleTool && consoleLines.length > 0 && (
+            <div>
+              <div className="mb-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                <Terminal className="size-2.5" />
+                Console output
+              </div>
+              <div className="max-h-48 overflow-auto rounded bg-zinc-950 p-2 font-mono text-[10.5px] leading-relaxed text-zinc-100">
+                {consoleLines.map((line, i) => (
+                  <div
+                    key={i}
+                    className={cn(
+                      "whitespace-pre-wrap break-words",
+                      line.level === "error" && "text-red-400",
+                      line.level === "warn" && "text-amber-300",
+                      line.level === "info" && "text-sky-300"
+                    )}
+                  >
+                    <span className="mr-1 select-none text-zinc-500">
+                      {line.level === "error" ? "✗" : line.level === "warn" ? "⚠" : "›"}
+                    </span>
+                    {line.args.join(" ")}
+                  </div>
+                ))}
+                {(state === "executing" || state === "streaming") && (
+                  <div className="mt-0.5 inline-block h-3 w-1.5 animate-pulse-soft bg-emerald-400 align-text-bottom" />
+                )}
+              </div>
+            </div>
           )}
 
           {/* Action buttons */}
@@ -158,7 +239,7 @@ export function ToolCard({
                 <FileText className="size-3" /> Open file
               </Button>
             )}
-            {isBrowserTool && status === "error" && onOpenConsole && (
+            {isBrowserTool && (state === "error" || isConsoleTool) && onOpenConsole && (
               <Button
                 variant="outline"
                 size="sm"
@@ -168,12 +249,12 @@ export function ToolCard({
                 <Terminal className="size-3" /> Open console
               </Button>
             )}
-            {seg.result !== undefined && (
+            {result !== undefined && (
               <CopyButton
                 text={
-                  typeof seg.result === "string"
-                    ? seg.result
-                    : JSON.stringify(seg.result, null, 2)
+                  typeof result === "string"
+                    ? result
+                    : JSON.stringify(result, null, 2)
                 }
                 label="Copy result"
               />
@@ -181,9 +262,9 @@ export function ToolCard({
           </div>
 
           {/* Error */}
-          {seg.error && (
+          {error && (
             <div className="rounded border border-destructive/40 bg-destructive/5 p-2 text-destructive">
-              {seg.error}
+              {error}
             </div>
           )}
 
@@ -207,18 +288,18 @@ export function ToolCard({
                     Arguments
                   </div>
                   <pre className="mt-1 overflow-x-auto rounded bg-muted p-2 text-[11px] font-mono">
-                    {JSON.stringify(seg.arguments ?? {}, null, 2)}
+                    {JSON.stringify(parsedArgs ?? {}, null, 2)}
                   </pre>
                 </div>
-                {seg.result !== undefined && (
+                {result !== undefined && (
                   <div>
                     <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                       Result
                     </div>
                     <pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px] font-mono">
-                      {typeof seg.result === "string"
-                        ? seg.result
-                        : JSON.stringify(seg.result, null, 2)}
+                      {typeof result === "string"
+                        ? result
+                        : JSON.stringify(result, null, 2)}
                     </pre>
                   </div>
                 )}
@@ -231,9 +312,30 @@ export function ToolCard({
   );
 }
 
-function StatusIcon({ status }: { status: string }) {
+// Map a persisted segment status to the richer ToolCardState for display.
+function stateFromSegStatus(
+  status: "running" | "success" | "error" | "cancelled" | undefined
+): ToolCardState {
   switch (status) {
     case "running":
+      return "executing";
+    case "success":
+      return "success";
+    case "error":
+      return "error";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "generating";
+  }
+}
+
+function StateIcon({ state }: { state: ToolCardState }) {
+  switch (state) {
+    case "generating":
+    case "executing":
+    case "streaming":
+    case "ready":
       return <Loader2 className="size-3.5 shrink-0 animate-spin text-amber-500" />;
     case "success":
       return <Check className="size-3.5 shrink-0 text-emerald-500" />;
@@ -244,6 +346,31 @@ function StatusIcon({ status }: { status: string }) {
     default:
       return <Loader2 className="size-3.5 shrink-0 animate-spin" />;
   }
+}
+
+function StateBadge({ state }: { state: ToolCardState }) {
+  const color =
+    state === "success"
+      ? "text-emerald-600 bg-emerald-500/10"
+      : state === "error"
+      ? "text-destructive bg-destructive/10"
+      : state === "cancelled"
+      ? "text-muted-foreground bg-muted"
+      : state === "generating"
+      ? "text-violet-600 bg-violet-500/10"
+      : "text-amber-600 bg-amber-500/10";
+  const showPlay = state === "executing" || state === "streaming" || state === "ready";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+        color
+      )}
+    >
+      {showPlay && <Play className="size-2" />}
+      {STATE_LABEL[state]}
+    </span>
+  );
 }
 
 function KVTable({ rows }: { rows: [string, string][] }) {

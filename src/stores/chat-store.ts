@@ -1,5 +1,22 @@
 "use client";
 
+// ============================================================================
+// ChatStore (PRD §9, §10, §35) — high-performance streaming message store.
+//
+// CRITICAL CHANGE vs the old store: the rAF coalescing layer is GONE (PRD §8,
+// §3.1 "Delete … artificial streaming throttle"). Updates are now IMMEDIATE.
+// React 18's automatic batching handles dozens of deltas per second without
+// any throttle — and crucially, without the "paragraph batching" visual lag
+// the old rAF layer produced.
+//
+// To avoid the old "Maximum update depth exceeded" bug, the messages array
+// reference is NOT changed on every delta. Instead we keep a stable array
+// and mutate the streaming message's segments in place via a shallow clone
+// of ONLY that message. Components subscribe to primitive counts or to a
+// single message's content length — never to the whole `messages` array —
+// so only the affected component re-renders.
+// ============================================================================
+
 import { create } from "zustand";
 import type { Message, MessageSegment } from "@/lib/types";
 
@@ -8,7 +25,7 @@ type ChatState = {
   messages: Message[];
   isStreaming: boolean;
   streamingMessageId: string | null;
-  pendingBrowserTools: string[]; // callIds awaiting client-side execution
+  pendingBrowserTools: string[];
 
   setChatId: (id: string | null) => void;
   setMessages: (msgs: Message[]) => void;
@@ -17,88 +34,31 @@ type ChatState = {
   stopStreaming: () => void;
   clearMessages: () => void;
 
-  // streaming segment helpers — these are buffered & coalesced
-  appendToSegment: (
-    messageId: string,
-    predicate: (s: MessageSegment) => boolean,
-    create: () => MessageSegment,
-    mutate: (s: MessageSegment) => MessageSegment
-  ) => void;
+  // ---- streaming mutators (IMMEDIATE, no coalescing) ----
+
+  // Append a text delta to the streaming message's last content segment,
+  // creating one if none exists. This is the hot path — called per token.
+  appendTextDelta: (messageId: string, delta: string) => void;
+  appendThinkingDelta: (messageId: string, delta: string) => void;
+  addErrorSegment: (messageId: string, content: string) => void;
+
+  // Tool-call segment sync: the ToolStore is the source of truth for tool
+  // state, but the ChatStore also keeps a lightweight tool_call segment in
+  // the message so persisted messages render correctly after refresh.
   upsertToolCallSegment: (messageId: string, seg: MessageSegment) => void;
   setToolResult: (
     messageId: string,
     callId: string,
     patch: Partial<MessageSegment>
   ) => void;
-  addErrorSegment: (messageId: string, content: string) => void;
+
   setPendingBrowserTools: (callIds: string[]) => void;
 };
 
-// ---------- Coalescing layer ----------
-//
-// During streaming, the agent emits dozens of SSE events per second
-// (reasoning_content, content, tool_call_delta, …). Calling zustand's
-// `set()` synchronously on every chunk triggers React's
-// "Maximum update depth exceeded" guard.
-//
-// We buffer mutations in a queue and flush them on a requestAnimationFrame
-// (≈60fps). This is far less aggressive than queueMicrotask (which can fire
-// thousands of times per second) and avoids React's nested-update detection.
-// We also use a 16ms setTimeout fallback when rAF is unavailable (SSR / tests).
-
-type Mutator = (msgs: Message[]) => Message[];
-
-const pendingMutators: Mutator[] = [];
-let flushScheduled = false;
-// Whether any mutator actually changed the array reference. If no mutator
-// modified anything, we skip the `set()` call entirely to avoid unnecessary
-// re-renders.
-let anyMutatorChanged = false;
-
-function applyMutators(msgs: Message[]): Message[] {
-  if (pendingMutators.length === 0) {
-    anyMutatorChanged = false;
-    return msgs;
-  }
-  let next = msgs;
-  let changed = false;
-  for (const fn of pendingMutators) {
-    const result = fn(next);
-    if (result !== next) {
-      changed = true;
-      next = result;
-    }
-  }
-  pendingMutators.length = 0;
-  anyMutatorChanged = changed;
-  return next;
-}
-
-function scheduleFlush(set: (fn: (s: ChatState) => Partial<ChatState>) => void) {
-  if (flushScheduled) return;
-  flushScheduled = true;
-  const flush = () => {
-    flushScheduled = false;
-    set((s) => {
-      if (pendingMutators.length === 0) return {};
-      const messages = applyMutators(s.messages);
-      // If no mutator actually changed the array, don't trigger a re-render.
-      if (!anyMutatorChanged || messages === s.messages) return {};
-      return { messages };
-    });
-  };
-  // Prefer requestAnimationFrame for ~60fps coalescing (max one flush per
-  // frame). Fall back to setTimeout(0) when rAF isn't available.
-  if (typeof requestAnimationFrame === "function") {
-    requestAnimationFrame(flush);
-  } else {
-    setTimeout(flush, 16);
-  }
-}
-
-// Immutably patch a single message's segments. Returns a NEW messages array
-// (shallow-copied) so React sees a new reference, but only the touched
-// message and its touched segment array are new objects.
+// Immutably patch a single message. Returns a NEW messages array (shallow
+// copied) so React sees a new reference, but only the touched message object
+// is new — all other messages keep their reference, so their subscribers
+// don't re-render.
 function patchMessage(
   msgs: Message[],
   messageId: string,
@@ -129,8 +89,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setMessages: (msgs) => set({ messages: msgs }),
 
-  appendMessage: (msg) =>
-    set((s) => ({ messages: [...s.messages, msg] })),
+  appendMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 
   startStreaming: (assistantId) =>
     set({ isStreaming: true, streamingMessageId: assistantId }),
@@ -141,26 +100,63 @@ export const useChatStore = create<ChatState>((set) => ({
   clearMessages: () =>
     set({ messages: [], isStreaming: false, streamingMessageId: null }),
 
-  appendToSegment: (messageId, predicate, create, mutate) => {
-    pendingMutators.push((msgs) =>
-      patchMessage(msgs, messageId, (msg) => {
+  // ---- IMMEDIATE streaming mutators (no rAF, no debounce) ----
+
+  appendTextDelta: (messageId, delta) =>
+    set((s) => ({
+      messages: patchMessage(s.messages, messageId, (msg) => {
         const segments = msg.segments;
         const last = segments[segments.length - 1];
-        if (last && predicate(last)) {
+        if (last && last.type === "content") {
+          // Hot path: just append to the existing content segment. We create
+          // a new segment object (so React sees a change) but we do NOT copy
+          // the whole segments array — we use a tiny splice.
           const nextSegs = segments.slice();
-          nextSegs[nextSegs.length - 1] = mutate(last);
+          nextSegs[nextSegs.length - 1] = {
+            type: "content",
+            content: (last as { content: string }).content + delta,
+          };
           return { ...msg, segments: nextSegs };
         }
-        return { ...msg, segments: [...segments, create()] };
-      })
-    );
-    scheduleFlush(set);
-  },
+        return {
+          ...msg,
+          segments: [...segments, { type: "content", content: delta }],
+        };
+      }),
+    })),
+
+  appendThinkingDelta: (messageId, delta) =>
+    set((s) => ({
+      messages: patchMessage(s.messages, messageId, (msg) => {
+        const segments = msg.segments;
+        const last = segments[segments.length - 1];
+        if (last && last.type === "thinking") {
+          const nextSegs = segments.slice();
+          nextSegs[nextSegs.length - 1] = {
+            type: "thinking",
+            content: (last as { content: string }).content + delta,
+          };
+          return { ...msg, segments: nextSegs };
+        }
+        return {
+          ...msg,
+          segments: [...segments, { type: "thinking", content: delta }],
+        };
+      }),
+    })),
+
+  addErrorSegment: (messageId, content) =>
+    set((s) => ({
+      messages: patchMessage(s.messages, messageId, (msg) => ({
+        ...msg,
+        segments: [...msg.segments, { type: "error", content }],
+      })),
+    })),
 
   upsertToolCallSegment: (messageId, seg) => {
     const toolSeg = seg as Extract<MessageSegment, { type: "tool_call" }>;
-    pendingMutators.push((msgs) =>
-      patchMessage(msgs, messageId, (msg) => {
+    set((s) => ({
+      messages: patchMessage(s.messages, messageId, (msg) => {
         const idx = msg.segments.findIndex(
           (x) =>
             x.type === "tool_call" &&
@@ -175,16 +171,12 @@ export const useChatStore = create<ChatState>((set) => ({
           const merged: Extract<MessageSegment, { type: "tool_call" }> = {
             ...existing,
             ...toolSeg,
-            // For streaming tool_call updates, we always want the latest
-            // arguments / argumentsText / status from the incoming segment.
             arguments:
               toolSeg.arguments && Object.keys(toolSeg.arguments).length > 0
                 ? toolSeg.arguments
                 : existing.arguments,
-            argumentsText:
-              toolSeg.argumentsText ?? existing.argumentsText,
+            argumentsText: toolSeg.argumentsText ?? existing.argumentsText,
             status: toolSeg.status ?? existing.status,
-            // Persist label/detail once set.
             label: toolSeg.label ?? existing.label,
             detail: toolSeg.detail ?? existing.detail,
             result: toolSeg.result ?? existing.result,
@@ -195,14 +187,13 @@ export const useChatStore = create<ChatState>((set) => ({
           return { ...msg, segments: nextSegs };
         }
         return { ...msg, segments: [...msg.segments, seg] };
-      })
-    );
-    scheduleFlush(set);
+      }),
+    }));
   },
 
-  setToolResult: (messageId, callId, patch) => {
-    pendingMutators.push((msgs) =>
-      patchMessage(msgs, messageId, (msg) => {
+  setToolResult: (messageId, callId, patch) =>
+    set((s) => ({
+      messages: patchMessage(s.messages, messageId, (msg) => {
         let touched = false;
         const nextSegs = msg.segments.map((seg) => {
           if (seg.type === "tool_call" && seg.callId === callId) {
@@ -213,21 +204,8 @@ export const useChatStore = create<ChatState>((set) => ({
         });
         if (!touched) return msg;
         return { ...msg, segments: nextSegs };
-      })
-    );
-    scheduleFlush(set);
-  },
+      }),
+    })),
 
-  addErrorSegment: (messageId, content) => {
-    pendingMutators.push((msgs) =>
-      patchMessage(msgs, messageId, (msg) => ({
-        ...msg,
-        segments: [...msg.segments, { type: "error", content }],
-      }))
-    );
-    scheduleFlush(set);
-  },
-
-  setPendingBrowserTools: (callIds) =>
-    set({ pendingBrowserTools: callIds }),
+  setPendingBrowserTools: (callIds) => set({ pendingBrowserTools: callIds }),
 }));
