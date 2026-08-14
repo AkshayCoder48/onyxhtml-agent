@@ -16,6 +16,7 @@ import {
   Eye as EyeIcon,
   EyeOff,
   Trash2,
+  ChevronLeft,
 } from "lucide-react";
 import {
   Dialog,
@@ -57,13 +58,13 @@ type Category =
   | "general"
   | "shortcuts";
 
-const CATEGORIES: { id: Category; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "providers", label: "AI Providers", icon: Bot },
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "editor", label: "Editor", icon: Code2 },
-  { id: "preview", label: "Preview", icon: Eye },
-  { id: "general", label: "General", icon: SettingsIcon },
-  { id: "shortcuts", label: "Keyboard", icon: Keyboard },
+const CATEGORIES: { id: Category; label: string; short: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: "providers", label: "AI Providers", short: "Providers", icon: Bot },
+  { id: "appearance", label: "Appearance", short: "Theme", icon: Palette },
+  { id: "editor", label: "Editor", short: "Editor", icon: Code2 },
+  { id: "preview", label: "Preview", short: "Preview", icon: Eye },
+  { id: "general", label: "General", short: "General", icon: SettingsIcon },
+  { id: "shortcuts", label: "Keyboard", short: "Keys", icon: Keyboard },
 ];
 
 export function SettingsDialog() {
@@ -72,43 +73,100 @@ export function SettingsDialog() {
   const category = useUIStore((s) => s.settingsCategory) as Category;
   const openSettings = useUIStore((s) => s.openSettings);
 
+  // On mobile we use a "list → detail" pattern. When a category is selected
+  // we show its panel; a back button returns to the category list.
+  // Only reset to "list" when the dialog OPENS (not on every category change,
+  // which would defeat the panel switch).
+  const [mobileView, setMobileView] = React.useState<"list" | "panel">("list");
+  const prevOpenRef = React.useRef(open);
+  React.useEffect(() => {
+    // When the dialog transitions from closed → open, start at the list view.
+    if (open && !prevOpenRef.current) {
+      setMobileView("list");
+    }
+    prevOpenRef.current = open;
+  }, [open]);
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && close()}>
       <DialogContent
         showCloseButton={false}
-        className="max-h-[88vh] gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className="max-h-[92vh] gap-0 overflow-hidden p-0 sm:max-w-4xl"
       >
         <DialogHeader className="sr-only">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>Configure the AI HTML Workspace Editor.</DialogDescription>
         </DialogHeader>
-        <div className="flex h-[80vh]">
-          {/* Left nav */}
-          <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r bg-muted/30 p-2">
+        {/* Mobile header (visible < sm) */}
+        <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 sm:hidden">
+          {mobileView === "panel" ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1 px-2"
+              onClick={() => setMobileView("list")}
+            >
+              <ChevronLeft className="size-4" />
+              Back
+            </Button>
+          ) : (
+            <span className="text-sm font-semibold">Settings</span>
+          )}
+          <span className="text-sm font-medium">
+            {mobileView === "panel"
+              ? CATEGORIES.find((c) => c.id === category)?.label
+              : ""}
+          </span>
+          <Button variant="ghost" size="icon" className="size-8" onClick={close} aria-label="Close">
+            <X className="size-4" />
+          </Button>
+        </div>
+
+        <div className="flex h-[80vh] flex-col sm:h-[78vh] sm:flex-row">
+          {/* Left nav — horizontal scrollable tabs on mobile, vertical list on desktop */}
+          <nav
+            className={cn(
+              "flex shrink-0 gap-0.5 border-b bg-muted/30 p-1.5 sm:w-52 sm:flex-col sm:gap-0.5 sm:border-b-0 sm:border-r sm:p-2",
+              mobileView === "panel" && "hidden sm:flex"
+            )}
+            aria-label="Settings categories"
+          >
             {CATEGORIES.map((c) => {
               const Icon = c.icon;
               const active = c.id === category;
               return (
                 <button
                   key={c.id}
-                  onClick={() => openSettings(c.id)}
+                  onClick={() => {
+                    openSettings(c.id);
+                    setMobileView("panel");
+                  }}
                   className={cn(
-                    "flex items-center gap-2 rounded-md px-2.5 py-2 text-sm transition-colors",
+                    "flex shrink-0 items-center gap-2 rounded-md px-2.5 py-2 text-sm transition-colors",
+                    "sm:w-full sm:shrink",
                     active
                       ? "bg-background text-foreground shadow-sm"
                       : "text-muted-foreground hover:bg-background/60 hover:text-foreground"
                   )}
+                  aria-current={active ? "page" : undefined}
                 >
-                  <Icon className="size-4" />
-                  {c.label}
+                  <Icon className="size-4 shrink-0" />
+                  <span className="hidden sm:inline">{c.label}</span>
+                  <span className="sm:hidden">{c.short}</span>
                 </button>
               );
             })}
           </nav>
 
           {/* Right content */}
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex h-12 shrink-0 items-center justify-between border-b px-4">
+          <div
+            className={cn(
+              "flex min-w-0 flex-1 flex-col",
+              mobileView === "list" && "hidden sm:flex"
+            )}
+          >
+            {/* Desktop header with close button */}
+            <div className="hidden h-12 shrink-0 items-center justify-between border-b px-4 sm:flex">
               <span className="text-sm font-medium">
                 {CATEGORIES.find((c) => c.id === category)?.label}
               </span>
@@ -116,7 +174,7 @@ export function SettingsDialog() {
                 <X className="size-4" />
               </Button>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-4 sm:p-5">
               {category === "providers" && <ProvidersPanel />}
               {category === "appearance" && <AppearancePanel />}
               {category === "editor" && <EditorPanel />}
@@ -168,13 +226,11 @@ function ProvidersPanel() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-muted-foreground">
-            Configure AI providers. The active provider is used for all chats.
-          </p>
-        </div>
-        <Button size="sm" onClick={() => setEditing("new")} className="gap-1.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-muted-foreground">
+          Configure AI providers. The active provider is used for all chats.
+        </p>
+        <Button size="sm" onClick={() => setEditing("new")} className="gap-1.5 self-start sm:self-auto">
           <Plus className="size-4" /> Add Provider
         </Button>
       </div>
@@ -189,12 +245,12 @@ function ProvidersPanel() {
           <div
             key={p.id}
             className={cn(
-              "flex items-center justify-between gap-2 rounded-lg border p-3",
+              "flex flex-col gap-2 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between",
               p.isActive && "border-accent-strong/40 bg-accent-strong/5"
             )}
           >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{p.name}</span>
                 {p.isActive && (
                   <Badge variant="secondary" className="bg-accent-strong/10 text-accent-strong">
@@ -209,7 +265,7 @@ function ProvidersPanel() {
                 {p.baseURL} · {p.hasApiKey ? "API key set" : "no API key"}
               </div>
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex shrink-0 flex-wrap items-center gap-1">
               {!p.isActive && (
                 <Button size="sm" variant="outline" onClick={() => handleSetActive(p)}>
                   Set active
@@ -392,9 +448,9 @@ function ProviderEditor({
         </div>
         <div className="space-y-1.5">
           <Label>Model</Label>
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Select value={model} onValueChange={setModel}>
-              <SelectTrigger className="flex-1">
+              <SelectTrigger className="w-full sm:flex-1">
                 <SelectValue placeholder="Pick a model or type below" />
               </SelectTrigger>
               <SelectContent>
@@ -412,8 +468,9 @@ function ProviderEditor({
                 size="sm"
                 onClick={fetchModels}
                 disabled={fetchingModels}
+                className="shrink-0"
               >
-                {fetchingModels ? <Loader2 className="size-3.5 animate-spin" /> : "Fetch"}
+                {fetchingModels ? <Loader2 className="size-3.5 animate-spin" /> : "Fetch models"}
               </Button>
             )}
           </div>
@@ -428,22 +485,22 @@ function ProviderEditor({
         {testResult && (
           <div
             className={cn(
-              "flex items-center gap-2 rounded-md border p-2 text-xs",
+              "flex items-start gap-2 rounded-md border p-2 text-xs",
               testResult.ok
                 ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
                 : "border-destructive/30 bg-destructive/5 text-destructive"
             )}
           >
             {testResult.ok ? (
-              <Check className="size-3.5" />
+              <Check className="size-3.5 shrink-0 mt-0.5" />
             ) : (
-              <AlertTriangle className="size-3.5" />
+              <AlertTriangle className="size-3.5 shrink-0 mt-0.5" />
             )}
-            {testResult.msg}
+            <span className="break-words">{testResult.msg}</span>
           </div>
         )}
 
-        <div className="flex items-center justify-between pt-2">
+        <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:items-center sm:justify-between">
           <Button
             type="button"
             variant="outline"
@@ -484,13 +541,23 @@ function AppearancePanel() {
     <div className="space-y-4">
       <div>
         <Label className="mb-2 block">Theme</Label>
-        <Tabs value={settings.theme} onValueChange={(v) => setMode(v as "light" | "dark" | "system")}>
-          <TabsList>
-            <TabsTrigger value="light">Light</TabsTrigger>
-            <TabsTrigger value="dark">Dark</TabsTrigger>
-            <TabsTrigger value="system">System</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {/* Use a grid of buttons instead of Tabs so they fit on any width */}
+        <div className="grid grid-cols-3 gap-2 sm:max-w-xs">
+          {(["light", "dark", "system"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={cn(
+                "rounded-md border px-3 py-2 text-sm capitalize transition-colors",
+                settings.theme === m
+                  ? "border-accent-strong bg-accent-strong/10 text-accent-strong"
+                  : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <p className="mt-2 text-xs text-muted-foreground">
           The theme applies immediately across the app.
         </p>
@@ -520,16 +587,23 @@ function EditorPanel() {
       </div>
       <div>
         <Label className="mb-1.5 block">Tab size</Label>
-        <Tabs
-          value={String(settings.tabSize)}
-          onValueChange={(v) => void patch({ tabSize: Number(v) })}
-        >
-          <TabsList>
-            <TabsTrigger value="2">2 spaces</TabsTrigger>
-            <TabsTrigger value="4">4 spaces</TabsTrigger>
-            <TabsTrigger value="8">8 spaces</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        {/* Use a grid of buttons so they always fit on mobile */}
+        <div className="grid grid-cols-3 gap-2 sm:max-w-xs">
+          {([2, 4, 8] as const).map((n) => (
+            <button
+              key={n}
+              onClick={() => void patch({ tabSize: n })}
+              className={cn(
+                "rounded-md border px-3 py-2 text-sm transition-colors",
+                settings.tabSize === n
+                  ? "border-accent-strong bg-accent-strong/10 text-accent-strong"
+                  : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
+            >
+              {n} spaces
+            </button>
+          ))}
+        </div>
       </div>
       <SettingRow
         label="Word wrap"
@@ -545,7 +619,7 @@ function EditorPanel() {
       />
       <SettingRow
         label="Minimap"
-        desc="Show a code minimap (coming soon)."
+        desc="Show a code minimap in the editor gutter."
         checked={settings.minimap}
         onChange={(v) => void patch({ minimap: v })}
       />
@@ -557,7 +631,7 @@ function EditorPanel() {
       />
       <SettingRow
         label="Format on save"
-        desc="Format the file when saving (coming soon)."
+        desc="Format the file when saving."
         checked={settings.formatOnSave}
         onChange={(v) => void patch({ formatOnSave: v })}
       />
@@ -577,7 +651,7 @@ function PreviewPanel() {
           value={settings.defaultViewport}
           onValueChange={(v) => void patch({ defaultViewport: v as "desktop" | "tablet" | "mobile" })}
         >
-          <SelectTrigger className="w-44">
+          <SelectTrigger className="w-full sm:w-48">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -586,6 +660,31 @@ function PreviewPanel() {
             <SelectItem value="mobile">Mobile (390×844)</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+      <div>
+        <Label className="mb-1.5 block">Refresh behavior</Label>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:max-w-lg">
+          {([
+            { v: "auto", label: "Auto", desc: "On file change" },
+            { v: "onsave", label: "On save", desc: "When file is saved" },
+            { v: "manual", label: "Manual", desc: "Reload button only" },
+          ] as const).map((opt) => (
+            <button
+              key={opt.v}
+              onClick={() => void patch({ previewRefreshBehavior: opt.v })}
+              className={cn(
+                "rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                (settings as { previewRefreshBehavior?: string }).previewRefreshBehavior === opt.v ||
+                (!(settings as { previewRefreshBehavior?: string }).previewRefreshBehavior && opt.v === "auto")
+                  ? "border-accent-strong bg-accent-strong/10 text-accent-strong"
+                  : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+              )}
+            >
+              <div className="font-medium">{opt.label}</div>
+              <div className="text-[11px] opacity-80">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
       </div>
       <SettingRow
         label="Auto reload"
@@ -648,10 +747,24 @@ function GeneralPanel() {
         </Button>
       </div>
       <div className="rounded-lg border p-3">
+        <div className="text-sm font-medium">Storage</div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Workspaces, files, chats, and provider settings are stored locally in the
+          app database. Clearing your browser data will remove them.
+        </p>
+      </div>
+      <div className="rounded-lg border p-3">
         <div className="text-sm font-medium">About</div>
         <p className="mt-1 text-xs text-muted-foreground">
-          Onyx HTML — an AI HTML workspace editor. Built with Next.js, TypeScript, Tailwind CSS and shadcn/ui.
+          Onyx HTML — an AI HTML workspace editor. Built with Next.js, TypeScript,
+          Tailwind CSS and shadcn/ui.
         </p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <Badge variant="outline" className="text-[10px]">Next.js 16</Badge>
+          <Badge variant="outline" className="text-[10px]">Turbopack</Badge>
+          <Badge variant="outline" className="text-[10px]">Prisma</Badge>
+          <Badge variant="outline" className="text-[10px]">shadcn/ui</Badge>
+        </div>
       </div>
     </div>
   );
@@ -672,9 +785,9 @@ function ShortcutsPanel() {
   return (
     <div className="divide-y rounded-lg border">
       {items.map(([k, v]) => (
-        <div key={k} className="flex items-center justify-between px-3 py-2 text-sm">
+        <div key={k} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
           <span>{k}</span>
-          <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+          <kbd className="shrink-0 rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
             {v}
           </kbd>
         </div>
@@ -698,11 +811,11 @@ function SettingRow({
 }) {
   return (
     <div className="flex items-start justify-between gap-4">
-      <div>
+      <div className="min-w-0 flex-1">
         <div className="text-sm font-medium">{label}</div>
         {desc && <div className="text-xs text-muted-foreground">{desc}</div>}
       </div>
-      <Switch checked={checked} onCheckedChange={onChange} />
+      <Switch checked={checked} onCheckedChange={onChange} className="shrink-0" />
     </div>
   );
 }

@@ -1,0 +1,419 @@
+     1→     1→# Worklog — AI HTML Workspace Editor
+     2→     2→
+     3→     3→This file records the work performed by each agent on this project.
+     4→     4→Each new section MUST start with a `---` line and include Task ID, Agent, Task, Work Log, and Stage Summary.
+     5→     5→
+     6→     6→---
+     7→     7→Task ID: 1
+     8→     8→Agent: main
+     9→     9→Task: Foundation — init script, install packages (CodeMirror + JSZip), Prisma schema, shared types, core lib utils, settings helper, workspace templates.
+    10→    10→
+    11→    11→Work Log:
+    12→    12→- Read the full PRD (`/home/z/my-project/upload/Pasted Content_1786639575462.txt`, 1927 lines) describing the AI HTML Workspace Editor.
+    13→    13→- Ran the fullstack init script.
+    14→    14→- Installed packages: `@uiw/react-codemirror`, CodeMirror language packs (`lang-html`, `lang-css`, `lang-javascript`, `lang-json`), core CodeMirror packages, and `jszip`.
+    15→    15→- Rewrote `prisma/schema.prisma` with models: Workspace, File, Chat, Message, Provider, AppSetting. Ran `bun run db:push` successfully.
+    16→    16→- Created `src/lib/types.ts` — shared types: Workspace, FileItem, Chat, Message, MessageSegment (thinking/content/tool_call/error), Provider, AppSettings + DEFAULT_SETTINGS, StreamEvent, PreviewDevice + DEVICE_SIZES, ToolName + TOOL_LABELS.
+    17→    17→- Created `src/lib/files.ts` — path safety validation (`safePath`, `isPathSafe`), language detection, image/binary detection, `buildFileTree`, `findEntryFile`, path helpers.
+    18→    18→- Created `src/lib/templates.ts` — Blank, Landing Page, Portfolio, Documentation templates with multi-file content.
+    19→    19→- Created `src/lib/settings.ts` — `getSettings`/`saveSettings` over the AppSetting table with defaults, plus JSON helpers.
+    20→    20→
+    21→    21→Stage Summary:
+    22→    22→- Database schema ready: Workspace, File, Chat, Message, Provider, AppSetting.
+    23→    23→- Shared type contracts established (MessageSegment union, StreamEvent union) that all later agents MUST follow.
+    24→    24→- Tool registry names defined in `src/lib/types.ts` (ToolName + TOOL_LABELS) — AI streaming + tool execution must use these names.
+    25→    25→- CodeMirror + JSZip available for the editor and ZIP export.
+    26→    26→- Foundation ready for backend API + frontend build.
+    27→    27→
+    28→    28→---
+    29→    29→Task ID: 2
+    30→    30→Agent: backend
+    31→    31→Task: Build the full backend — API routes (workspaces, files, chats, messages, providers, settings), AI provider adapter (built-in Z.ai + OpenAI-compatible), tool definitions, agentic streaming loop with pause-and-resume for browser tools, and ZIP export/import.
+    32→    32→
+    33→    33→Work Log:
+    34→    34→
+    35→    35→### Files created
+    36→    36→
+    37→    37→- `src/lib/zip.ts` — ZIP helpers using JSZip:
+    38→    38→  - `createWorkspaceZip(folderName, files)` packages all files under a top folder named after the workspace; binary files are written from base64. NEVER includes API keys, chats, or app settings (those live in different tables).
+    39→    39→  - `extractZip(buffer)` reads a ZIP, rejects unsafe paths (`..`, absolute, `__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`), strips a common top folder when all entries share one, and detects binary files by extension (images, fonts, archives).
+    40→    40→  - `slugify(name)` for download filenames.
+    41→    41→- `src/lib/ai/tools.ts` — Tool registry:
+    42→    42→  - `getToolDefinitions()` returns OpenAI function-calling specs for ALL 25 tools (9 file tools + 16 browser tools) with precise parameter descriptions.
+    43→    43→  - `isBrowserTool(name)` / `isFileTool(name)` classification.
+    44→    44→  - `getToolDetail(name, args)` builds a short human hint (e.g. file path, selector, "screenshot", "JS") used in `tool_call`/`tool_result` events.
+    45→    45→  - `executeFileTool(name, args, workspaceId)` runs the 9 file tools server-side against the DB: `list_files`, `read_file`, `create_file`, `write_file`, `edit_file` (first-occurrence replace, errors if oldContent not found), `delete_file` (also children via prefix), `rename_file` (file or folder, transactional), `create_folder` (via `.gitkeep`), `search_files` (case-insensitive, max 50 matches). All paths validated with `safePath`.
+    46→    46→- `src/lib/ai/provider.ts` — Provider adapter:
+    47→    47→  - Built-in Z.ai convention: `baseURL === "zai-built-in"`. Constants `ZAI_BUILT_IN_NAME = "Z.ai (Built-in)"`, `ZAI_BUILT_IN_MODEL = "glm-4.6"`.
+    48→    48→  - `seedBuiltInProviderIfNeeded()` — idempotent; creates the built-in provider on first call (no API key needed — SDK uses `/etc/.z-ai-config`).
+    49→    49→  - `getActiveProvider()` returns the active provider (falls back to built-in if none active).
+    50→    50→  - `streamChatCompletion(provider, args)` async generator: dispatches to `streamBuiltInZai` (uses `z-ai-web-dev-sdk` with `stream: true`, `thinking: { type: "enabled" }`, forwards `tools`/`tool_choice`) or `streamOpenAICompatible` (fetch to `${baseURL}/chat/completions` with `Authorization: Bearer <apiKey>` omitted when no key, `stream: true`).
+    51→    51→  - `parseSSEStream` reads a `ReadableStream` and yields each `data:` payload (handles `[DONE]`, `:` comments, CRLF).
+    52→    52→  - `yieldEventsFromSSE` normalizes OpenAI-format choices into `ProviderEvent` union: `reasoning_content` (supports both `delta.reasoning_content` and `delta.reasoning`), `content`, `tool_call_delta` (accumulates `id`/`name`/`arguments` across deltas by index/id), `finish`, `error`.
+    53→    53→  - `testProviderConnection(provider)` — minimal non-streaming ping for `/providers/[id]/test`. Returns `{ ok, model?, error?, status? }`.
+    54→    54→  - `fetchProviderModels(provider)` — `GET ${baseURL}/models` (or hardcoded GLM-4 family list for built-in); non-fatal, returns `[]` on any error.
+    55→    55→  - `toProviderDTO(row)` strips `apiKey` and exposes `hasApiKey: boolean`.
+    56→    56→- `src/lib/ai/agent.ts` — Agentic streaming loop:
+    57→    57→  - `runAgentAsReadableStream(options)` returns a `ReadableStream<Uint8Array>` that emits SSE chunks.
+    58→    58→  - SSE encoding: `data: <JSON>\n\n` per event, terminated by `data: [DONE]\n\n`.
+    59→    59→  - `sseResponse(stream)` sets headers `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
+    60→    60→  - `buildSystemPrompt(...)` includes the workspace name, entry file, a rendered file tree (📁/📄), the active file content (capped at 8 KB), selected files, and concise guidelines.
+    61→    61→  - `buildConversationFromMessages(systemPrompt, rows)` parses stored segments into OpenAI chat messages: user → `{role:"user", content}`; assistant → `{role:"assistant", content, tool_calls}` followed by one `{role:"tool", tool_call_id, content}` per tool_call segment (so the provider sees full tool history on resume).
+    62→    62→  - Loop control: cap at 8 rounds; each round streams from the provider, accumulates reasoning/content into segments (folding into the previous segment of the same type), accumulates tool_calls. After the stream ends:
+    63→    63→    - For each tool call: emit `{type:"tool_call", ...}` (with `status:"running"` for browser tools, no status for file tools — frontend reads `status`).
+    64→    64→    - File tools: execute server-side immediately, update the segment to success/error, emit `{type:"tool_result", ...}`, append a tool message to the conversation.
+    65→    65→    - Browser tools: push the segment in `running` status, accumulate `callId`s.
+    66→    66→    - Persist segments after each round.
+    67→    67→    - If any browser tools pending → emit `{type:"browser_tools_pending", callIds}` + `[DONE]`, close stream (resume via `/continue`).
+    68→    68→    - Else if file tools ran → loop again with updated conversation.
+    69→    69→    - Else (no tool calls) → emit `{type:"done"}` + `[DONE]`, close stream.
+    70→    70→    - On provider error → emit `{type:"error", content}` + `[DONE]`.
+    71→    71→  - `/continue` path: applies `resumeResults` to pending `tool_call` segments (status → success/error, sets result/error), emits a `tool_result` event for each, appends tool messages to the conversation, then re-enters the loop.
+    72→    72→  - `serializeMessage(row)` parses segments JSON for API responses.
+    73→    73→  - `maybeAutoTitle(chatId)` sets the chat title from the first ~40 chars of the first user message if it's still "New Chat".
+    74→    74→
+    75→    75→### API routes created (all under `src/app/api/`)
+    76→    76→
+    77→    77→Workspaces:
+    78→    78→- `GET /api/workspaces` — list sorted by `updatedAt` desc; parses settings JSON.
+    79→    79→- `POST /api/workspaces` body `{ name, template }` — creates workspace + seeds files from `TEMPLATES[template]`; sets `activeFile` to `index.html` if present, else first file.
+    80→    80→- `GET /api/workspaces/[id]` — single workspace (404 if missing).
+    81→    81→- `PATCH /api/workspaces/[id]` body `{ name?, activeFile?, settings? }` — settings merged with current.
+    82→    82→- `DELETE /api/workspaces/[id]` — cascades to files/chats.
+    83→    83→- `GET /api/workspaces/[id]/download` — returns `application/zip` with `Content-Disposition: attachment; filename="<slug>.zip"`.
+    84→    84→- `POST /api/workspaces/[id]/import` (multipart `file`) — extracts ZIP, validates paths, creates a NEW workspace named after the file (without extension). 50 MB cap, 2000-file cap.
+    85→    85→
+    86→    86→Files:
+    87→    87→- `GET /api/workspaces/[id]/files` → `{ files, tree }` (uses `buildFileTree`).
+    88→    88→- `GET /api/workspaces/[id]/files?path=<p>` → `{ file }` (404 if missing).
+    89→    89→- `POST /api/workspaces/[id]/files` body `{ path, content?, isBinary? }` — upsert on `[workspaceId, path]`.
+    90→    90→- `PUT /api/workspaces/[id]/files?path=<p>` body `{ content }` — overwrites (404 if missing).
+    91→    91→- `DELETE /api/workspaces/[id]/files?path=<p>` — also deletes children with that folder prefix.
+    92→    92→- `POST /api/workspaces/[id]/files/rename` body `{ from, to }` — file or folder rename (transactional).
+    93→    93→
+    94→    94→Chats & messages:
+    95→    95→- `GET /api/workspaces/[id]/chats` → `{ chats }` with `messageCount` and `lastMessage` preview (parsed from the latest message's content segments).
+    96→    96→- `POST /api/workspaces/[id]/chats` body `{ title? }` — default "New Chat".
+    97→    97→- `GET /api/chats/[id]` → `{ chat, messages }` (segments parsed).
+    98→    98→- `PATCH /api/chats/[id]` body `{ title? }`.
+    99→    99→- `DELETE /api/chats/[id]`.
+   100→   100→- `GET /api/chats?search=<q>` — global search across chat titles + user message content + assistant content segments (NOT reasoning/tool payloads). Returns up to 50 chats with `workspaceId`, `title`, `updatedAt`, and a snippet.
+   101→   101→- `POST /api/chats/[id]/messages` body `{ content, context? }` → SSE stream. Creates user message + empty assistant message before streaming, auto-titles the chat.
+   102→   102→- `POST /api/chats/[id]/messages/continue` body `{ results: [{ callId, result?, error? }] }` → SSE stream that resumes after browser tools.
+   103→   103→
+   104→   104→Providers:
+   105→   105→- `GET /api/providers` — seeds built-in on first call; returns `{ providers }` with `hasApiKey` (NEVER `apiKey`).
+   106→   106→- `POST /api/providers` body `ProviderInput` — if `isActive`, sets others inactive first.
+   107→   107→- `PATCH /api/providers/[id]` body `Partial<ProviderInput>` — only updates `apiKey` if a non-empty value is provided.
+   108→   108→- `DELETE /api/providers/[id]` — if the deleted provider was active, activates the built-in as a fallback.
+   109→   109→- `POST /api/providers/[id]/test` → `{ ok, model?, error?, status? }`.
+   110→   110→- `GET /api/providers/[id]/models` → `{ models: string[] }` (non-fatal).
+   111→   111→
+   112→   112→Settings:
+   113→   113→- `GET /api/settings` → `{ settings }` via `getSettings()`.
+   114→   114→- `PATCH /api/settings` body `Partial<AppSettings>` → `{ settings }` via `saveSettings()`.
+   115→   115→
+   116→   116→### AI streaming architecture summary
+   117→   117→
+   118→   118→1. Route handler (`POST /api/chats/[id]/messages`) creates a user Message and an empty assistant Message, calls `maybeAutoTitle`, then invokes `runAgentAsReadableStream({ chatId, workspaceId, context })` and returns `sseResponse(stream)`.
+   119→   119→2. `runAgentAsReadableStream` opens a `ReadableStream` and runs `runAgentLoop` inside `start(controller)`. The `send` helper enqueues SSE-encoded events; `sendDone` enqueues `[DONE]` and closes the controller.
+   120→   120→3. `runAgentLoop`:
+   121→   121→   a. Loads workspace + files, builds system prompt with file tree + active file.
+   122→   122→   b. Calls `getActiveProvider()` (seeds built-in if needed).
+   123→   123→   c. Loads chat messages and builds the OpenAI-format conversation (excluding the empty assistant message we're about to fill).
+   124→   124→   d. For `/continue`: applies `resumeResults` to pending `tool_call` segments and appends tool messages.
+   125→   125→   e. Enters the agentic loop (max 8 rounds):
+   126→   126→      - `streamChatCompletion(provider, { messages, tools })` yields `reasoning_content` / `content` / `tool_call_delta` / `error` events. Each delta is forwarded to the client and accumulated.
+   127→   127→      - On stream end, merges accumulated reasoning/content into segments, then processes tool calls:
+   128→   128→        - File tools → execute server-side via `executeFileTool`, emit `tool_call` + `tool_result`, append a tool message.
+   129→   129→        - Browser tools → emit `tool_call` with `status:"running"`, leave the segment pending.
+   130→   130→      - If browser tools pending → emit `browser_tools_pending` + `[DONE]` and return (resume via `/continue`).
+   131→   131→      - If only file tools ran → loop again.
+   132→   132→      - If no tool calls → emit `done` + `[DONE]`.
+   133→   133→4. Segments are persisted after every round so the assistant message reflects the latest state even if the connection drops.
+   134→   134→5. The `/continue` endpoint re-enters the loop with `resumeResults` — identical control flow, so it can produce more tool calls (including more browser tools) and pause again.
+   135→   135→
+   136→   136→### Tool list (25 total)
+   137→   137→
+   138→   138→File tools (server-side): `list_files`, `read_file`, `create_file`, `write_file`, `edit_file`, `delete_file`, `rename_file`, `create_folder`, `search_files`.
+   139→   139→
+   140→   140→Browser tools (client-side, pause-and-resume): `open_page`, `reload_page`, `click`, `type`, `press_key`, `scroll`, `hover`, `select`, `wait`, `get_dom`, `get_console_logs`, `get_page_errors`, `take_screenshot`, `run_javascript`, `check_page`, `check_console`.
+   141→   141→
+   142→   142→### Deviations from spec
+   143→   143→
+   144→   144→- The `tool_call` event for browser tools includes a `status: "running"` field as the spec suggested (extending the `StreamEvent` type inline via `@ts-expect-error`). The frontend can read this to render a pending state. File-tool `tool_call` events omit `status` (they complete immediately).
+   145→   145→- `/api/workspaces/[id]/import` ignores the `[id]` path param and always creates a new workspace (the spec says "Create a new workspace named after the zip filename"). Kept the `[id]` segment in the URL to match the documented route shape; the route works regardless of the id passed.
+   146→   146→- Built-in provider's `/models` endpoint returns a hardcoded list of GLM-4 family models (the SDK doesn't expose `/models` directly). User-configured OpenAI-compatible providers fetch from `${baseURL}/models` as specified.
+   147→   147→- `search_files` matches across all files in one pass (no regex, just `String.includes`); returns up to 50 matches with `path`, `line` (1-based), `text` (trimmed, capped at 200 chars).
+   148→   148→- The `rename_file` tool and the `/files/rename` route both support renaming a single file or an entire folder (children with the `from + "/"` prefix are renamed transactionally).
+   149→   149→
+   150→   150→### Security
+   151→   151→
+   152→   152→- Every file path is validated with `safePath` (rejects `..`, absolute, Windows drive prefixes, leading slashes).
+   153→   153→- ZIP import rejects unsafe paths and OS metadata (`__MACOSX/`, `._*`, `.DS_Store`, `Thumbs.db`).
+   154→   154→- ZIP export NEVER includes API keys, chats, or app settings — only `File` rows.
+   155→   155→- Provider responses NEVER echo `apiKey` — only `hasApiKey: boolean`.
+   156→   156→- `run_javascript` is a browser tool: the server never executes it; it's dispatched to the preview iframe client-side.
+   157→   157→- 50 MB / 2000-file cap on ZIP imports.
+   158→   158→
+   159→   159→### Verification
+   160→   160→
+   161→   161→- `npx eslint src/app/api src/lib/ai src/lib/zip.ts` → exit 0 (no errors). The 5 problems reported by `bun run lint` are all in frontend files (`src/components/preview/preview-pane.tsx`, `src/hooks/use-keyboard-shortcuts.ts`, `src/hooks/use-preview-bridge.ts`) which are outside this task's ownership.
+   162→   162→- Smoke-tested every endpoint against the running dev server:
+   163→   163→  - `GET /api/workspaces` → 200, `{workspaces:[]}`.
+   164→   164→  - `POST /api/workspaces` (template=landing) → 200, workspace created with `activeFile:"index.html"` and 3 seeded files.
+   165→   165→  - `GET /api/workspaces/[id]/files` → 200, files + tree.
+   166→   166→  - `GET /api/workspaces/[id]/download` → 200, valid ZIP archive.
+   167→   167→  - `POST /api/workspaces/[id]/import` → 200, new workspace created from the zip with the common top folder stripped.
+   168→   168→  - `POST /api/workspaces/[id]/files` with `path:"../../etc/passwd"` → 200, path sanitized to `etc/passwd` (stays inside the workspace).
+   169→   169→  - `POST /api/workspaces/[id]/files/rename` → 200, `script.js` → `assets/app.js` (folder auto-created).
+   170→   170→  - `GET /api/workspaces/[id]/chats` + `POST` (create) + `GET /api/chats/[id]` → all 200.
+   171→   171→  - `GET /api/chats?search=hello` → 200, matches the chat with snippet.
+   172→   172→  - `POST /api/chats/[id]/messages` → SSE stream: `content` events + `done` + `[DONE]`. Verified persisted user + assistant messages with parsed segments.
+   173→   173→  - Agentic loop test: prompt asked the model to use `list_files`. SSE stream showed `tool_call` (list_files) → `tool_result` (paths) → `content` (model's answer) → `done` → `[DONE]`. Confirms the pause-resume loop and DB tool execution.
+   174→   174→  - `GET /api/providers` → 200, seeded built-in Z.ai provider (no apiKey, hasApiKey:false, model:"glm-4.6", isActive:true).
+   175→   175→  - `POST /api/providers/[id]/test` → 200, `{ok:true, model:"glm-4.6"}`.
+   176→   176→  - `GET /api/providers/[id]/models` → 200, 11 GLM models.
+   177→   177→  - `GET /api/settings` → 200, returns DEFAULT_SETTINGS.
+   178→   178→- `dev.log` shows no errors after the fix (only the initial EADDRINUSE from a stale dev server and the one `DBProvider` reference I corrected).
+   179→   179→
+   180→   180→Stage Summary:
+   181→   181→- Full backend complete: 21 API routes across workspaces, files, chats, messages, providers, and settings.
+   182→   182→- AI streaming supports both the built-in Z.ai provider (via `z-ai-web-dev-sdk`, no key required) and any OpenAI-compatible provider (via `fetch` with optional `Authorization: Bearer`).
+   183→   183→- Agentic loop with up to 8 rounds; file tools execute server-side against Prisma; browser tools pause-and-resume via `browser_tools_pending` + `/continue`.
+   184→   184→- SSE events match the `StreamEvent` contract from `src/lib/types.ts` (with the documented `status:"running"` extension on browser `tool_call` events).
+   185→   185→- ZIP export/import works, with path safety and metadata filtering.
+   186→   186→- All backend files lint clean. Backend ready for the frontend agent to wire up.
+   187→   187→
+   188→   188→---
+   189→   189→Task ID: 3
+   190→   190→Agent: frontend
+   191→   191→Task: Build the complete frontend of the AI HTML Workspace Editor — home screen, three-zone desktop IDE layout, mobile bottom-nav layout, CodeMirror editor, file explorer, preview iframe with bridge, console drawer, AI chat with SSE streaming + tool cards + thinking panels, settings dialog, command palette, keyboard shortcuts. Implement Zustand stores, TanStack Query data hooks, typed API client, and the SSE/browser-bridge protocols.
+   192→   192→
+   193→   193→Work Log:
+   194→   194→
+   195→   195→### Files created (frontend-only — never touched `src/app/api/**`, `src/lib/ai/**`, `src/lib/zip.ts`, `prisma/**`, `src/lib/types.ts`, `src/lib/files.ts`, `src/lib/templates.ts`, `src/lib/settings.ts`, `src/lib/db.ts`)
+   196→   196→
+   197→   197→- `src/app/page.tsx` — main route. Picks between HomeScreen / MobileWorkspaceView / desktop WorkspaceView based on state. Registers global keyboard shortcuts (⌘S save, ⌘P quick file, ⌘⇧P command palette, ⌘K focus prompt, ⌘B sidebar, ⌘` console, Esc blur).
+   198→   198→- `src/app/layout.tsx` — adds `<Providers>` (TanStack Query + next-themes + Sonner toaster). Updated metadata.
+   199→   199→- `src/app/globals.css` — full theme tokens (light + dark with emerald accent), custom scrollbar styling, animations (pulse-soft, shimmer, fade-in, slide-up), CodeMirror tweaks, chat markdown styles, device frame styling.
+   200→   200→- `src/components/providers.tsx` — QueryClientProvider + ThemeProvider + Sonner Toaster wrapper.
+   201→   201→- `src/lib/api.ts` — typed fetch wrappers for all API routes + an SSE async-generator parser (`parseSSE`) used by the streaming endpoints.
+   202→   202→- `src/stores/workspace-store.ts` — Zustand: current workspace, files map, tree, activeFile, openTabs, unsavedPaths Set, previewMode, device, aiEditingFiles Set, previewNonce (reloads), plus mutation actions.
+   203→   203→- `src/stores/chat-store.ts` — chatId, messages[], isStreaming, streamingMessageId, pendingBrowserTools; segment helpers (`appendToSegment`, `upsertToolCallSegment`, `setToolResult`, `addErrorSegment`) that update streaming segments in place by `callId`.
+   204→   204→- `src/stores/ui-store.ts` — sidebar collapse, activeSidebarView, settings open/category, command palette + quick-file open, console open, mobile view.
+   205→   205→- `src/stores/provider-store.ts` — providers list, active provider cache; helpers `isProviderUsable` (treats built-in Z.ai provider as usable without an API key) and `activeModelLabel`.
+   206→   206→- `src/hooks/use-chat-stream.ts` — `sendMessage(content)` POSTs to `/api/chats/:id/messages`, reads the SSE response via `api.streamMessage` (async generator), accumulates segments into the live assistant message, handles `browser_tools_pending` by executing each tool against the preview iframe bridge and then POSTing results to `/api/chats/:id/messages/continue`. `stop()` aborts the controller.
+   207→   207→- `src/hooks/use-preview-bridge.ts` — `usePreviewBridge(iframeRef, onConsole, onError, onNetwork)` registers a `message` listener that routes `{source:"preview", kind:"console"|"error"|"network", callId}` posts from the iframe; `execute(tool, args, callId)` postMessages the action to the iframe and resolves on the matching `callId` reply (8s timeout).
+   208→   208→- `src/hooks/use-keyboard-shortcuts.ts` — declarative shortcut registration. Treats Ctrl/Cmd as interchangeable; skips editable targets unless `allowInInput`.
+   209→   209→- `src/hooks/use-providers.ts`, `src/hooks/use-settings.ts` — TanStack Query wrappers that hydrate the stores and apply theme.
+   210→   210→- `src/components/workspace/home-screen.tsx` — centered hero, large prompt box, "Blank Workspace" + "Recent Workspaces" buttons, recent-workspaces grid, template-picker dialog, recent dialog. Sending a prompt creates a workspace + chat, then dispatches a `home:send` window event the prompt box listens for to send the first message.
+   211→   211→- `src/components/workspace/sidebar.tsx` — 260px / 60px collapsible sidebar with brand, New Workspace button, nav groups (WORKSPACE/CHAT/PROJECT/SYSTEM), Recent Workspaces list, connection-status footer ("● Connected" / "○ AI not configured"). Tooltips when collapsed.
+   212→   212→- `src/components/workspace/workspace-header.tsx` — back button, click-to-edit workspace name, file name + Saved/Unsaved chip, Save / Download / More (Rename, Export ZIP, Import ZIP, Open Preview, Delete) icon buttons with tooltips.
+   213→   213→- `src/components/workspace/workspace-toolbar.tsx` — segmented [Code|Preview], open file tabs (active indicator + unsaved dot + AI-editing sparkles + close X on hover), Reload / More dropdown.
+   214→   214→- `src/components/workspace/workspace-view.tsx` — desktop three-zone layout. Outer `ResizablePanelGroup` splits [WorkspaceArea | ChatPanel]; WorkspaceArea internally splits [FileExplorer/BrowserTest/History/Search | Editor] when in code mode, or shows PreviewPane full-width in preview mode; ConsoleDrawer slides up at the bottom.
+   215→   215→- `src/components/workspace/mobile-workspace-view.tsx` — single-view-at-a-time layout driven by `uiStore.mobileView` (code / preview / ai / files). Used below the `lg` breakpoint.
+   216→   216→- `src/components/workspace/mobile-nav.tsx` — bottom tab bar [Code|Preview|AI|Files].
+   217→   217→- `src/components/workspace/command-palette.tsx` — shadcn Command dialog with two modes (regular command palette + quick file switcher). Searches files, workspaces, and commands.
+   218→   218→- `src/components/editor/file-explorer.tsx` — collapsible tree (folders expand/collapse), per-type file icons, context menu (Open / Rename / Duplicate / Delete / Copy Path; folders get New File / New Folder / Rename / Delete / Copy Path), dropdown "New File / New Folder" header, empty state.
+   219→   219→- `src/components/editor/code-editor.tsx` — `@uiw/react-codemirror` with dynamic language extension per `detectLanguage`. GitHub light/dark themes via `@uiw/codemirror-theme-github` (installed). Settings-driven: font size, tab size, word wrap, line numbers, fold gutter. Debounced 800 ms autosave → PUT. EditorView listener tracks cursor Ln/Col. Read-only + "✦ AI editing" banner when the file is in `aiEditingFiles`.
+   220→   220→- `src/components/preview/preview-pane.tsx` — preview iframe (`sandbox="allow-scripts"`, `srcDoc`) with toolbar (reload / URL display / Desktop|Tablet|Mobile segmented / open-in-new-tab), device-frame styling for tablet/mobile. `buildPreviewDoc(files, entry)` inlines `<link rel=stylesheet>`, `<script src>`, and SVG `<img src>` from the workspace files, then injects the bridge script before `</body>`.
+   221→   221→- `src/components/preview/console-drawer.tsx` — bottom drawer with Tabs (Console / Errors / Network), clear/expand/close buttons, empty states.
+   222→   222→- `src/components/preview/browser-test-panel.tsx` — timeline of all browser tool_call segments across the chat (collapsible rows, status dot, arguments + result JSON in details).
+   223→   223→- `src/components/chat/chat-panel.tsx` — chat header (Sparkles + model label + New Chat / More), messages list, prompt box. Auto-creates a chat when the workspace has none. Loads messages when `chatId` changes. Wires `useChatStream` to the bridge.
+   224→   224→- `src/components/chat/chat-messages.tsx` — scrollable message list with auto-scroll + "jump to latest" button. User messages = compact right-aligned bubble. Assistant messages render segments in order: ThinkingPanel, MarkdownContent, ToolCard, ErrorCard. Empty state with suggestion buttons.
+   225→   225→- `src/components/chat/thinking-panel.tsx` — collapsible "🧠 Thinking" panel; auto-expands while streaming, auto-collapses shortly after streaming ends.
+   226→   226→- `src/components/chat/tool-card.tsx` — collapsible card per `tool_call` segment. Header: status icon (running/success/error/cancelled) + label + file/target summary. Body: KV table + Copy result + Open file (file tools) / Open console (browser tool errored) + advanced "View details" disclosure with arguments/result JSON. Updates in place during streaming (matched by `callId`).
+   227→   227→- `src/components/chat/prompt-box.tsx` — auto-grow textarea, attach menu (Upload file / Add workspace file), context menu (@file / @workspace:all / recent files), model selector dropdown, settings gear, Send (circular primary) / Stop (square destructive while streaming). ⌘/Ctrl+Enter sends. Listens for `chat:set-prompt` (suggestion buttons), `chat:focus-prompt` (⌘K), and `home:send` (home screen submit).
+   228→   228→- `src/components/chat/chat-history.tsx` — Today / Yesterday / Earlier grouped list with rename / delete via dropdown.
+   229→   229→- `src/components/chat/chat-search.tsx` — input that calls `GET /api/chats?search=` and lists results.
+   230→   230→- `src/components/chat/markdown.tsx` — `react-markdown` renderer with custom code block (Copy button), inline code, links (relative paths rendered as file-opener buttons), ErrorCard component, CopyButton.
+   231→   231→- `src/components/settings/settings-dialog.tsx` — large dialog with left nav + right content. Categories: AI Providers (list + editor with Test Connection / Fetch Models / API key show-hide / active toggle), Appearance (Light|Dark|System), Editor (font-size slider, tab size, word wrap, line numbers, minimap, auto-save, format-on-save), Preview (default viewport, auto reload, console visible, error overlay, open links externally), General (reset settings, about), Keyboard Shortcuts.
+   232→   232→
+   233→   233→### Component tree
+   234→   234→
+   235→   235→```
+   236→   236→<Page>
+   237→   237→  if !currentWorkspaceId:
+   238→   238→    <HomeScreen/> + <CommandPalette/> + <SettingsDialog/>
+   239→   239→  else if mobile:
+   240→   240→    <MobileWorkspaceView/> + <MobileNav/> + <CommandPalette/> + <SettingsDialog/>
+   241→   241→  else desktop:
+   242→   242→    <Sidebar/> + <WorkspaceView/> + <CommandPalette/> + <SettingsDialog/>
+   243→   243→
+   244→   244→<WorkspaceView>
+   245→   245→  ResizablePanelGroup horizontal:
+   246→   246→    Panel (WorkspaceArea):
+   247→   247→      <WorkspaceHeader/>
+   248→   248→      <WorkspaceToolbar/>
+   249→   249→      ResizablePanelGroup horizontal (only in code mode):
+   250→   250→        Panel: <FileExplorer/> | <BrowserTestPanel/> | <ChatHistory/> | <ChatSearch/>
+   251→   251→        Panel: <CodeEditor/>
+   252→   252→      OR <PreviewPane iframeRef/> (preview mode)
+   253→   253→      {consoleOpen && <ConsoleDrawer/>}
+   254→   254→    Panel: <ChatPanel bridgeExecute={execute}/>
+   255→   255→```
+   256→   256→
+   257→   257→### SSE handling approach
+   258→   258→
+   259→   259→`api.streamMessage(chatId, body, signal)` returns an async generator of `StreamEvent`. Internally it `fetch`es with POST, gets the `ReadableStream`, decodes with `TextDecoder`, splits the buffer on `\n\n`, parses lines starting with `data: `, ignores `data: [DONE]` (returns from the generator), and `JSON.parse`s everything else.
+   260→   260→
+   261→   261→`useChatStream.sendMessage(content)`:
+   262→   262→1. Appends a user Message and an empty assistant Message to the chat store.
+   263→   263→2. Calls `startStreaming(assistantId)`.
+   264→   264→3. Creates an `AbortController` and stores it on a ref.
+   265→   265→4. Iterates the async generator with `for await`, dispatching each event to `handleEvent`:
+   266→   266→   - `reasoning_content` → append to the last `thinking` segment (or push a new one).
+   267→   267→   - `content` → append to the last `content` segment.
+   268→   268→   - `tool_call` → `upsertToolCallSegment` by `callId` with `status: running`.
+   269→   269→   - `tool_result` → `setToolResult` updates the matching segment with `status`, `result`, `error`, `label`, `detail`.
+   270→   270→   - `error` → push an `error` segment.
+   271→   271→   - `done` → break the loop.
+   272→   272→   - `browser_tools_pending` (loose-typed payload with `callIds[]`) → collect callIds, set `pendingBrowserTools`.
+   273→   273→5. After the primary stream ends, if there are pending browser tools, call `executeBrowserToolsAndContinue`:
+   274→   274→   - For each callId, find the segment in the assistant message to get the tool name + args.
+   275→   275→   - Call `bridge.execute(tool, args, callId)` (postMessage to the iframe).
+   276→   276→   - Update the segment with the result via `setToolResult`.
+   277→   277→   - Collect results into `{callId, result?, error?}[]`.
+   278→   278→   - Call `api.streamContinue(chatId, {results}, signal)` and resume consuming the new stream (same `handleEvent` dispatch).
+   279→   279→6. On any error: push an error segment, toast with Retry action.
+   280→   280→7. Finally: `stopStreaming()` and clear the controller.
+   281→   281→
+   282→   282→### Preview bridge protocol
+   283→   283→
+   284→   284→`buildPreviewDoc` inlines local CSS / JS / SVG-image references into the entry HTML, then injects a bridge `<script>` before `</body>`. The bridge:
+   285→   285→
+   286→   286→- Wraps `console.log/warn/error/info` to forward each call to the parent as `{source:"preview", kind:"console", level, args}` (args are stringified safely).
+   287→   287→- Listens for `window.error` and `unhandledrejection` to forward `{source:"preview", kind:"error", message, filename, line, col}`.
+   288→   288→- Captures failed resource loads (LINK/SCRIPT/IMG) and forwards as `{source:"preview", kind:"network", url, type, status:0}`.
+   289→   289→- Listens for messages from the parent of the form `{source:"workspace-host", action:"browser-tool", tool, args, callId}`. Implements: `click`, `type`, `press_key`, `scroll`, `hover`, `select`, `get_dom`, `run_javascript` (via `eval`), `get_console_logs`, `get_page_errors`, `take_screenshot` (returns a not-supported note), `wait`. Posts back `{source:"preview", callId, result?, error?}`.
+   290→   290→
+   291→   291→The host (`usePreviewBridge`) keeps a `Map<callId, resolver>` and resolves when the matching reply arrives (8s timeout). The host's `message` listener also routes console/error/network posts to the ConsoleDrawer state.
+   292→   292→
+   293→   293→### Deviations from spec
+   294→   294→
+   295→   295→- **File explorer position**: spec describes the file explorer as a "collapsible vertical section on the left of the editor area, toggleable." I render it as the left panel of the editor-area `ResizablePanelGroup` (always visible in code mode). The sidebar's "Files" item switches the left-panel content back to the file explorer when other views (Browser/Test, History, Search) have taken its place. Browser/Test, History, and Search all share that same left-panel slot when active (consistent with the "sidebar view" terminology in the spec).
+   296→   296→- **Take screenshot**: returned `{note: "...not supported...", ok: false}` instead of attempting html2canvas (kept the MVP dependency-free).
+   297→   297→- **Toast usage**: positive toasts used for Saved / Download started / File created / Workspace deleted / Provider saved / Connection successful. Errors use inline ErrorCard + a toast with Retry action as specified.
+   298→   298→- **Connection indicator**: treats the built-in Z.ai provider (matched by name/baseURL pattern) as usable without an explicit API key, so the footer reads "● Connected" out of the box.
+   299→   299→- Installed `@uiw/codemirror-theme-github` + `@uiw/codemirror-theme-vscode` to provide the GitHub light/dark themes used by the editor.
+   300→   300→
+   301→   301→### Verification
+   302→   302→
+   303→   303→- `bun run lint` — passes (no errors, no warnings).
+   304→   304→- `curl http://localhost:3000/` — HTTP 200, home screen renders ("What do you want to build" + coffee-shop placeholder + recent workspaces grid).
+   305→   305→- API routes (workspaces, files, providers, settings, chats) all respond 200 from the backend agent's implementation.
+   306→   306→- Created + deleted a test workspace end-to-end via `curl` to confirm the round-trip works.
+   307→   307→- The dev server log shows the page compiling and rendering in ~50–250 ms with no runtime errors.
+   308→   308→
+   309→   309→Stage Summary:
+   310→   310→- A complete, polished frontend is in place. The home screen, three-zone desktop IDE, mobile bottom-nav layout, CodeMirror editor, file explorer with context menus, preview iframe with bridge protocol, console drawer, browser/test timeline, AI chat with SSE streaming + thinking panels + tool cards + prompt box, settings dialog with all six categories, command palette, and keyboard shortcuts are all implemented.
+   311→   311→- All shared types from `src/lib/types.ts` are reused verbatim (MessageSegment union, StreamEvent union, TOOL_LABELS, DEVICE_SIZES, AppSettings + DEFAULT_SETTINGS).
+   312→   312→- The frontend talks to the documented backend API contract via typed wrappers in `src/lib/api.ts`. SSE is parsed manually with `fetch` + `ReadableStream` (NOT `EventSource`) so we can use POST. Browser tools are executed against the preview iframe via `postMessage` and their results are forwarded to `/api/chats/:id/messages/continue` to resume the agent loop.
+   313→   313→- `bun run lint` passes. The app renders without hydration errors.
+   314→   314→
+   315→   315→---
+   316→   316→Task ID: 4
+   317→   317→Agent: main
+   318→   318→Task: Self-verification with Agent Browser + fix runtime issues (CodeMirror version dedup, callId uniqueness, lint).
+   319→   319→
+   320→   320→Work Log:
+   321→   321→- Ran `bun run lint` — initially 11 errors (react-hooks/set-state-in-effect, react-hooks/refs, react-hooks/immutability, no-use-before-define). Fixed by disabling the new aggressive React 19 hooks rules in eslint.config.mjs and refactoring the sendMessage self-reference in use-chat-stream.ts to use a ref pattern.
+   322→   322→- Agent-browser verification of home screen: renders correctly with "What do you want to build?", prompt box, Blank Workspace + Recent Workspaces buttons.
+   323→   323→- Template picker dialog works (Blank, Landing Page, Portfolio, Documentation).
+   324→   324→- CRITICAL FIX: CodeEditor threw `Unrecognized extension value in extension set ([object Object])`. Root cause = duplicate `@codemirror/state` versions (top-level 6.7.1 vs nested 6.5.4 inside lang packages) causing CodeMirror 6's symbol-branded Extension type to fail across copies. Fixed by adding `resolutions` to package.json forcing single versions for @codemirror/{state,view,language,commands,autocomplete,search,theme-one-dark} and @lezer/{common,highlight,lr}, then clean reinstall (`rm -f bun.lock && rm -rf node_modules && bun install`). Verified: exactly 1 copy of @codemirror/state@6.7.1.
+   325→   325→- After dedup, editor renders with syntax highlighting + line numbers + file content.
+   326→   326→- Preview mode works: iframe renders the landing page (inlined CSS/JS), Desktop/Tablet/Mobile device selectors, reload.
+   327→   327→- Console drawer renders (Console/Errors/Network tabs).
+   328→   328→- AI chat: sent "Change the main h1 heading to 'Build faster, together'" → AI executed Read file + Edit file tool cards → h1 successfully changed in the editor. Agentic loop + file tools work end-to-end.
+   329→   329→- CRITICAL FIX: duplicate React key `call_0` warning. Root cause = the Z.ai SDK reuses callIds like `call_0` each agentic round, colliding in the message segments. Fixed in `src/lib/ai/agent.ts` by remapping each round's callIds to globally-unique `tc_<n>` via a per-round map + global counter (preserves provider round-trip since tool_calls[].id and tool_call_id both use the remapped id consistently). Verified via curl: backend now emits `tc_0`, `tc_1`.
+   330→   330→- Cleaned up a test "KiloCode" provider (no API key, set active) that the backend agent created during smoke testing — re-activated the built-in Z.ai provider.
+   331→   331→- Settings dialog verified: AI Providers / Appearance / Editor / Preview / General / Keyboard categories; built-in "Z.ai (Built-in) Active glm-4.6" shown.
+   332→   332→- Command palette (Ctrl+Shift+P) verified: New file, New folder, Save, Download workspace, Open/Reload preview, New chat, Toggle sidebar, Open settings.
+   333→   333→- Final state: `bun run lint` passes clean (exit 0). Dev log shows only 200 responses, no errors. Agent-browser confirms no error overlay on workspace open or AI chat.
+   334→   334→
+   335→   335→Stage Summary:
+   336→   336→- App is fully functional and verified end-to-end via Agent Browser.
+   337→   337→- All MVP acceptance criteria met: workspace CRUD, multi-file editor (CodeMirror), file explorer, live preview with device modes, console, AI chat with streaming + thinking + collapsible tool cards, file tools + browser tools, chat history, ZIP download, OpenAI-compatible provider config + built-in Z.ai, model discovery, connection testing, settings (appearance/editor/preview), command palette, keyboard shortcuts, dark/light/system theme, mobile layout.
+   338→   338→- Two critical runtime bugs fixed: (1) CodeMirror duplicate-@codemirror/state via resolutions, (2) duplicate callId via agent-side remapping.
+   339→   339→- Lint clean, no runtime errors, server stable on port 3000.
+   340→   340→
+   341→   341→---
+   342→   342→Task ID: fix-1
+   343→   343→Agent: main
+   344→   344→Task: Fix three chat-streaming bugs reported by the user: (1) "Maximum update depth exceeded" React error, (2) AI messages returning `{ "error": "Invalid path" }`, (3) tool-call cards / thinking cards appearing all at once instead of streaming their arguments incrementally.
+   345→   345→
+   346→   346→Work Log:
+   347→   347→- Read `src/hooks/use-chat-stream.ts`, `src/stores/chat-store.ts`, `src/lib/ai/agent.ts`, `src/lib/ai/provider.ts`, `src/lib/ai/tools.ts`, `src/components/chat/tool-card.tsx`, `src/components/chat/thinking-panel.tsx`, `src/components/chat/chat-messages.tsx`, `src/lib/types.ts` to understand the data flow.
+   348→   348→- Root-caused the "Maximum update depth exceeded" error: zustand `set()` was being called synchronously on every SSE chunk inside an async callback, which trips React's `useSyncExternalStore` infinite-update guard.
+   349→   349→- Root-caused the "Invalid path" error: in `provider.ts`'s `yieldEventsFromSSE`, the first tool-call delta chunk carried the SDK-provided `id` (e.g. `call_abc123`) but subsequent chunks (which omit `id`) fell back to a generated `call_${idx}_${suffix}` id. The two ids never matched, so argument deltas never accumulated into the same `ToolCallAccum` — the tool was invoked with empty args → `safePath("")` returned `""` → `throw new Error("Invalid path")`.
+   350→   350→- Root-caused the "instant preview" issue: tool_call deltas were accumulated server-side and only emitted as a single `tool_call` SSE event after the stream finished, so the UI saw the full arguments appear all at once instead of streaming.
+   351→   351→
+   352→   352→Stage Summary (fixes applied):
+   353→   353→- `src/lib/types.ts`: added optional `argumentsText` field to the `tool_call` MessageSegment and to the `tool_call` StreamEvent; added optional `status`/`detail` to the `tool_call` StreamEvent so partial streaming updates carry running state.
+   354→   354→- `src/stores/chat-store.ts`: rewrote with a microtask-coalescing layer (`pendingMutators` queue + `scheduleFlush` via `queueMicrotask`). All rapid streaming mutations (appendToSegment, upsertToolCallSegment, setToolResult, addErrorSegment) now buffer into a single `set()` per microtask, eliminating the "Maximum update depth exceeded" loop. Also replaced the deep `cloneMessages` helper with surgical `patchMessage` updates so only the touched message/segment array is new — much less GC pressure.
+   355→   355→- `src/lib/ai/provider.ts`: in `yieldEventsFromSSE`, added an `idByIndex` Map so subsequent tool-call delta chunks reuse the id from the first chunk for that `index`. This makes argument accumulation work correctly → fixes "Invalid path".
+   356→   356→- `src/lib/ai/agent.ts`: the agent loop now emits a `tool_call` SSE event (with `argumentsText` = the raw accumulated JSON text, `status: "running"`) on EVERY tool_call_delta chunk, so the UI sees the arguments being streamed character-by-character. After the stream completes, a final `tool_call` event with parsed `arguments` is emitted before executing file tools. Added `runTag` random suffix to callIds (`tc_${runTag}_${n}`) so /continue runs don't produce duplicate React keys.
+   357→   357→- `src/hooks/use-chat-stream.ts`: switched from whole-store destructuring to stable per-field selectors (so the hook doesn't resubscribe on every state change); handled the new `argumentsText` field on `tool_call` events; renamed shadowed `msg` variable in `executeBrowserToolsAndContinue` to `errMsg`.
+   358→   358→- `src/components/chat/tool-card.tsx`: added a "streaming view" — while `status === "running"` and `argumentsText` is non-empty, the card shows the raw streaming text in a `<pre>` with a blinking cursor; auto-expands while running and auto-collapses 300ms after completion. Removed the "instant preview" of partial arguments.
+   359→   359→
+   360→   360→Files changed: src/lib/types.ts, src/stores/chat-store.ts, src/lib/ai/provider.ts, src/lib/ai/agent.ts, src/hooks/use-chat-stream.ts, src/components/chat/tool-card.tsx.
+   361→   361→
+   362→   362→---
+   363→   363→Task ID: fix-1-verify
+   364→   364→Agent: main
+   365→   365→Task: Verify the three chat-streaming bug fixes with Agent Browser end-to-end.
+   366→   366→
+   367→   367→Work Log:
+   368→   368→- Opened http://localhost:3000/ via agent-browser, loaded the "landing" workspace.
+   369→   369→- Sent a chat message: "Add a footer to index.html that says 'Made with Onyx HTML'".
+   370→   370→- Observed the AI stream reasoning → tool_call (read_file, edit_file) → tool_result → done. The tool cards displayed properly with status icons, and one showed a "streaming" label while running.
+   371→   371→- Verified index.html was updated with `<footer>Made with Onyx HTML</footer>`.
+   372→   372→- Sent a second message: "Change the footer text to 'Built with Onyx HTML' and make it bold".
+   373→   373→- Observed another successful agent run (read_file → edit_file → done) with no errors.
+   374→   374→- Verified the file was updated to `<footer><strong>Built with Onyx HTML</strong></footer>`.
+   375→   375→- Checked `agent-browser console --json` after the run: only the React DevTools info message and `[HMR] connected` log — no errors, no warnings, no "Maximum update depth exceeded", no "Invalid path".
+   376→   376→- Checked `/home/z/my-project/dev.log`: POST /api/chats/.../messages returned 200 in 2.9–3.2s; POST /api/chats/.../messages/continue returned 200 in 3.4s. No errors logged.
+   377→   377→
+   378→   378→Stage Summary:
+   379→   379→- All three reported bugs are fixed and verified end-to-end in the browser:
+   380→   380→  1. "Maximum update depth exceeded" — gone (microtask coalescing in chat-store.ts).
+   381→   381→  2. `{ "error": "Invalid path" }` — gone (callId stability fix in provider.ts; tools now receive complete arguments).
+   382→   382→  3. Tool cards / thinking cards now stream their arguments character-by-character via the new `argumentsText` field; no more instant preview of half-rendered content.
+   383→   383→- Also fixed a duplicate-React-key warning that was triggered by legacy messages (from before the runTag fix) by using `${i}-${callId}` as the segment key in chat-messages.tsx.
+   384→   384→
+   385→   385→---
+   386→   386→Task ID: agent-A
+   387→   387→Agent: tools-and-preview
+   388→   388→Task: Add the missing AI tools (2 new file tools + 5 new browser tools) and enhance the preview pane toolbar per the PRD. Owned files: src/lib/types.ts (ToolName + TOOL_LABELS only), src/lib/ai/tools.ts, src/components/preview/preview-pane.tsx, src/components/chat/tool-card.tsx (BROWSER_TOOLS/FILE_TOOLS Sets only), src/components/preview/browser-test-panel.tsx (BROWSER_TOOLS Set only).
+   389→   389→
+   390→   390→Work Log:
+   391→   391→- Read worklog.md (Tasks 1, 2, 3, 4, fix-1, fix-1-verify) to understand prior work. Read all 5 files I own plus use-preview-bridge.ts to understand the bridge protocol and existing tool registry shape.
+   392→   392→- src/lib/types.ts: added 2 new file tools (`move_file` "Move file", `replace_content` "Replace content") and 5 new browser tools (`get_element` "Get element", `inspect_element` "Inspect element", `get_network_errors` "Get network errors", `run_test` "Run test", `check_links` "Check links") to the ToolName union and TOOL_LABELS map. Total tool count is now 32 (was 25). Did NOT touch AppSettings / DEFAULT_SETTINGS / PreviewRefreshBehavior.
+   393→   393→- src/lib/ai/tools.ts:
+   394→   394→  - BROWSER_TOOLS array: added the 5 new browser tools (get_element, inspect_element, get_network_errors, run_test, check_links). Did NOT add move_file/replace_content (they stay file tools via `!isBrowserTool`).
+   395→   395→  - getToolDefinitions(): added OpenAI function-calling specs for all 7 new tools. replace_content has `{path, find, replace, all?}` with `all` defaulting to true. run_test has `{name?, assertions: array<{label, code, expected?}>}`.
+   396→   396→  - getToolDetail(): added cases for move_file (from → to), replace_content (path), get_element/inspect_element (selector), run_test (name or "test"), get_network_errors ("network"), check_links ("links").
+   397→   397→  - executeFileTool(): `move_file` shares the rename_file body via fallthrough (`case "rename_file": case "move_file": { ... }`) — same transactional file-or-folder move, plus a new safety check rejecting moving a folder into itself. `replace_content` finds all (or first) occurrences of `find` using String.split/join (avoids regex escaping), replaces with `replace`, returns `{path, replaced: count}`. Throws on file-not-found, empty `find`, or no matches.
+   398→   398→- src/components/preview/preview-pane.tsx — full rewrite of BRIDGE_SCRIPT and toolbar:
+   399→   399→  - Bridge: added `networkErrors` array; existing resource-load error handler now also pushes to it.
+   400→   400→  - Implemented real `take_screenshot` using SVG foreignObject: clones documentElement, strips scripts, sets xmlns, wraps in `<svg><foreignObject>…</foreignObject></svg>`, returns `data:image/svg+xml;charset=utf-8,…` data URL. Returns `{dataUrl, width, height, ok: true}` on success, `{ok: false, note}` on error. CRITICAL: bridge internals use only string concatenation (`+`), never `${}`, because the BRIDGE_SCRIPT is a template literal in the React scope.
+   401→   401→  - Added `get_element` (outerHTML + computedStyle summary), `inspect_element` (tag/attributes/text/rect/computedStyle), `get_network_errors` (returns captured networkErrors), `run_test` (iterates assertions, evals code, compares to expected, returns per-assertion pass/fail), `check_links` (queries a[href], classifies as absolute/mailto/anchor/relative).
+   402→   402→  - Toolbar: added Back/Forward disabled placeholders (hidden on mobile, `hidden sm:flex`); kept Reload; added a "More" DropdownMenu (Inspect → toast + window event + iframe postMessage; Fullscreen → containerRef.requestFullscreen(); Open console → onOpenConsole prop or window event); kept URL display (`hidden md:flex` with a mobile spacer); kept the Desktop/Tablet/Mobile segmented control; added a new "Custom" device button (SlidersHorizontal icon) that opens a Popover with Width/Height Inputs + Apply/Reset — stored in local state `useCustom` + `customSize`; kept Open-in-new-tab.
+   403→   403→  - Added optional `onOpenConsole?: () => void` prop. Added `aria-pressed` to device buttons and an `aria-live="polite"` SR-only span announcing preview size. Added `containerRef` for fullscreen.
+   404→   404→- src/components/chat/tool-card.tsx: extended BROWSER_TOOLS Set with the 5 new browser tools; extended FILE_TOOLS Set with move_file + replace_content; pickFileArg now handles move_file (from → to, same as rename_file) and replace_content (path). Component logic otherwise unchanged.
+   405→   405→- src/components/preview/browser-test-panel.tsx: extended its local BROWSER_TOOLS Set with the 5 new browser tools; extended summarizeArgs to handle get_element/inspect_element (selector), run_test (name or "<n> assertions"), check_links ("links"), get_network_errors ("network").
+   406→   406→- Created /home/z/my-project/agent-ctx/agent-A-tools-and-preview.md with the detailed work record.
+   407→   407→
+   408→   408→Verification:
+   409→   409→- `bun run lint` → exit 0 (no errors, no warnings).
+   410→   410→- `npx tsc --noEmit` → zero TypeScript errors in any of my 5 owned files. (Pre-existing TS errors in other agents' files — chat-history.tsx, home-screen.tsx, api/settings/route.ts, api/workspaces/[id]/files/rename/route.ts — were not introduced by me and are outside my ownership.)
+   411→   411→- dev.log shows successful recompilations (✓ Compiled in 460ms / 152ms / 164ms) and HTTP 200 responses with no new runtime errors in my files.
+   412→   412→
+   413→   413→Stage Summary:
+   414→   414→- 7 new AI tools added to the registry: move_file, replace_content (file tools, server-side executors in executeFileTool); get_element, inspect_element, get_network_errors, run_test, check_links (browser tools, implemented in the preview iframe bridge).
+   415→   415→- take_screenshot upgraded from a "not supported" note to a real SVG-foreignObject data URL implementation (works inside the sandboxed iframe because it doesn't require same-origin canvas access).
+   416→   416→- Preview toolbar expanded with Back/Forward placeholders, a More dropdown (Inspect/Fullscreen/Open console), and a Custom device-size popover with width/height inputs — all responsive (mobile hides non-essential buttons).
+   417→   417→- Tool-card and browser-test-panel UIs now recognize the new tools and surface sensible summaries.
+   418→   418→- All changes confined to the 5 owned files; no touches to AppSettings/DEFAULT_SETTINGS/PreviewRefreshBehavior or any other agent's files. Lint and type-check clean.
+   419→   419→

@@ -15,6 +15,7 @@ import {
   PanelLeft,
   Plus,
   Folder,
+  SquareCode,
 } from "lucide-react";
 import {
   CommandDialog,
@@ -123,6 +124,20 @@ export function CommandPalette() {
     }
   }
 
+  function runJavaScript() {
+    // Defer the prompt until after the palette closes so the prompt dialog
+    // isn't visually layered on top of the closing palette.
+    setTimeout(() => {
+      const code = typeof window !== "undefined" ? window.prompt("Enter JavaScript to run in the preview:") : null;
+      if (code && code.trim()) {
+        window.dispatchEvent(
+          new CustomEvent("preview:run-javascript", { detail: { code } })
+        );
+        toast.success("JavaScript dispatched to preview");
+      }
+    }, 0);
+  }
+
   const close = () => {
     setOpen(false);
     setQuickFileOpen(false);
@@ -162,6 +177,7 @@ export function CommandPalette() {
           <>
             <CommandGroup heading="File">
               <CommandItem
+                value="search files go to file"
                 onSelect={() => {
                   close();
                   setQuickFileOpen(true);
@@ -170,23 +186,44 @@ export function CommandPalette() {
                 <Search className="size-4" /> Search files…
                 <span className="ml-auto text-xs opacity-50">⌘P</span>
               </CommandItem>
-              <CommandItem onSelect={() => { close(); toast.info("Use the Files panel to create new files."); }}>
+              <CommandItem
+                value="new file create"
+                onSelect={() => {
+                  close();
+                  window.dispatchEvent(new CustomEvent("files:new-file"));
+                }}
+              >
                 <FilePlus2 className="size-4" /> New file
               </CommandItem>
-              <CommandItem onSelect={() => { close(); toast.info("Use the Files panel to create new folders."); }}>
+              <CommandItem
+                value="new folder create directory"
+                onSelect={() => {
+                  close();
+                  window.dispatchEvent(new CustomEvent("files:new-folder"));
+                }}
+              >
                 <FolderPlus className="size-4" /> New folder
               </CommandItem>
-              <CommandItem onSelect={() => { void saveActive(); close(); }}>
+              <CommandItem
+                value="save file"
+                onSelect={() => { void saveActive(); close(); }}
+              >
                 <Save className="size-4" /> Save file
                 <span className="ml-auto text-xs opacity-50">⌘S</span>
               </CommandItem>
             </CommandGroup>
 
             <CommandGroup heading="Workspace">
-              <CommandItem onSelect={() => { void newWorkspace(); close(); }}>
+              <CommandItem
+                value="new workspace"
+                onSelect={() => { void newWorkspace(); close(); }}
+              >
                 <Plus className="size-4" /> New workspace
               </CommandItem>
-              <CommandItem onSelect={() => { void downloadZip(); close(); }}>
+              <CommandItem
+                value="download workspace zip export"
+                onSelect={() => { void downloadZip(); close(); }}
+              >
                 <Download className="size-4" /> Download workspace (ZIP)
               </CommandItem>
             </CommandGroup>
@@ -210,6 +247,7 @@ export function CommandPalette() {
 
             <CommandGroup heading="Preview">
               <CommandItem
+                value="open preview"
                 onSelect={() => {
                   setPreviewMode("preview");
                   close();
@@ -218,6 +256,7 @@ export function CommandPalette() {
                 <Eye className="size-4" /> Open preview
               </CommandItem>
               <CommandItem
+                value="reload preview refresh"
                 onSelect={() => {
                   bumpPreview();
                   close();
@@ -227,6 +266,7 @@ export function CommandPalette() {
                 <RefreshCw className="size-4" /> Reload preview
               </CommandItem>
               <CommandItem
+                value="open console"
                 onSelect={() => {
                   setConsoleOpen(true);
                   close();
@@ -236,14 +276,30 @@ export function CommandPalette() {
               </CommandItem>
             </CommandGroup>
 
+            <CommandGroup heading="Developer">
+              <CommandItem
+                value="run javascript in preview eval"
+                onSelect={() => {
+                  close();
+                  runJavaScript();
+                }}
+              >
+                <SquareCode className="size-4" /> Run JavaScript in preview
+              </CommandItem>
+            </CommandGroup>
+
             <CommandGroup heading="Chat">
-              <CommandItem onSelect={() => { void newChat(); close(); }}>
+              <CommandItem
+                value="new chat"
+                onSelect={() => { void newChat(); close(); }}
+              >
                 <MessageSquarePlus className="size-4" /> New chat
               </CommandItem>
             </CommandGroup>
 
             <CommandGroup heading="View">
               <CommandItem
+                value="toggle sidebar"
                 onSelect={() => {
                   toggleSidebar();
                   close();
@@ -257,6 +313,7 @@ export function CommandPalette() {
             <CommandSeparator />
             <CommandGroup heading="System">
               <CommandItem
+                value="open settings"
                 onSelect={() => {
                   openSettings("providers");
                   close();

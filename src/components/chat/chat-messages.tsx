@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, RefreshCw } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -10,6 +10,13 @@ import { ThinkingPanel } from "./thinking-panel";
 import { ToolCard } from "./tool-card";
 import { MarkdownContent, ErrorCard } from "./markdown";
 import { Button } from "@/components/ui/button";
+
+// Dispatch a global event so chat-panel.tsx (or any other consumer) can wire
+// it to the `regenerate` function exposed by useChatStream, without us
+// needing direct access to the hook here.
+function triggerRegenerate() {
+  window.dispatchEvent(new CustomEvent("chat:regenerate"));
+}
 
 export function ChatMessages() {
   const messages = useChatStore((s) => s.messages);
@@ -38,6 +45,11 @@ export function ChatMessages() {
     return <EmptyChat />;
   }
 
+  // Determine whether the LAST message is an assistant message — we render
+  // the Regenerate action only for that case, and only while not streaming.
+  const lastMsg = messages[messages.length - 1];
+  const showRegenerate = !isStreaming && lastMsg?.role === "assistant";
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -50,6 +62,20 @@ export function ChatMessages() {
             <MessageItem key={m.id} message={m} streaming={isStreaming} />
           ))}
           {isStreaming && <div className="h-1 w-1 animate-pulse-soft rounded-full bg-accent-strong" />}
+          {showRegenerate && (
+            <div className="flex justify-start">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={triggerRegenerate}
+                className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                aria-label="Regenerate last response"
+              >
+                <RefreshCw className="size-3.5" />
+                Regenerate
+              </Button>
+            </div>
+          )}
         </div>
       </div>
       {!atBottom && (
@@ -134,7 +160,13 @@ function MessageItem({ message, streaming }: { message: Message; streaming: bool
           );
         }
         if (seg.type === "error") {
-          return <ErrorCard key={segKey} content={seg.content} />;
+          return (
+            <ErrorCard
+              key={segKey}
+              content={seg.content}
+              onRetry={triggerRegenerate}
+            />
+          );
         }
         return null;
       })}

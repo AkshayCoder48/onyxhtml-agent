@@ -13,12 +13,15 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { TEMPLATES } from "@/lib/templates";
+import type { Workspace } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Card,
   CardContent,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -205,9 +208,9 @@ export function HomeScreen() {
       <TemplatePicker
         open={templatePickerOpen}
         onOpenChange={setTemplatePickerOpen}
-        onPick={(key) => {
+        onPick={(key, name) => {
           setTemplatePickerOpen(false);
-          createWs.mutate({ template: key });
+          createWs.mutate({ name, template: key });
         }}
       />
 
@@ -235,19 +238,49 @@ function TemplatePicker({
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onPick: (key: keyof typeof TEMPLATES) => void;
+  onPick: (key: keyof typeof TEMPLATES, name: string) => void;
 }) {
+  const [name, setName] = React.useState("");
+  // Reset the name field whenever the dialog opens.
+  React.useEffect(() => {
+    if (open) setName("");
+  }, [open]);
+
+  function pick(key: keyof typeof TEMPLATES) {
+    onPick(key, name.trim());
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Choose a template</DialogTitle>
         </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="workspace-name">Workspace name</Label>
+          <Input
+            id="workspace-name"
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My awesome project"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                // Enter picks the first template (Blank).
+                pick("blank");
+              }
+            }}
+          />
+          <p className="text-xs text-muted-foreground">
+            Leave empty to use &ldquo;Untitled workspace&rdquo;.
+          </p>
+        </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {Object.values(TEMPLATES).map((t) => (
             <button
               key={t.key}
-              onClick={() => onPick(t.key)}
+              onClick={() => pick(t.key)}
               className={cn(
                 "group flex flex-col items-start gap-1 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent/40"
               )}
@@ -284,8 +317,8 @@ function RecentDialog({
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  workspaces: { id: string; name: string; template: string; updatedAt: string }[];
-  onOpen: (ws: { id: string; name: string; template: string; updatedAt: string }) => void;
+  workspaces: Workspace[];
+  onOpen: (ws: Workspace) => void;
   onDelete: (id: string) => void;
 }) {
   return (

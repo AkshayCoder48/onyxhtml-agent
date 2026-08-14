@@ -181,6 +181,11 @@ export const api = {
   deleteChat: (id: string) =>
     request<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
 
+  duplicateChat: (id: string) =>
+    request<{ chat: Chat }>(`/api/chats/${id}/duplicate`, {
+      method: "POST",
+    }),
+
   searchChats: (q: string) =>
     request<{ chats: Chat[] }>(`/api/chats?search=${encodeURIComponent(q)}`),
 
@@ -224,6 +229,31 @@ export const api = {
     });
     if (!res.ok || !res.body) {
       let detail = `Continue failed (${res.status})`;
+      try {
+        const j = (await res.json()) as { error?: string };
+        if (j?.error) detail = j.error;
+      } catch {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+    yield* parseSSE(res.body);
+  },
+
+  // Re-stream the assistant response for the last user message in the chat.
+  // The server deletes the previous assistant turn + any tool messages and
+  // starts a fresh agent run.
+  streamRegenerate: async function* (
+    chatId: string,
+    signal?: AbortSignal
+  ): AsyncGenerator<StreamEvent> {
+    const res = await fetch(`/api/chats/${chatId}/messages/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      let detail = `Regenerate failed (${res.status})`;
       try {
         const j = (await res.json()) as { error?: string };
         if (j?.error) detail = j.error;

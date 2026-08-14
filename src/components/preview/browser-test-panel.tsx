@@ -17,10 +17,15 @@ const BROWSER_TOOLS = new Set([
   "hover",
   "select",
   "get_dom",
+  "get_element",
+  "inspect_element",
   "get_console_logs",
   "get_page_errors",
+  "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "run_test",
+  "check_links",
   "open_page",
   "reload_page",
 ]);
@@ -149,6 +154,8 @@ function summarizeArgs(tool: string, args: Record<string, unknown> | undefined):
     case "click":
     case "hover":
     case "get_dom":
+    case "get_element":
+    case "inspect_element":
     case "scroll":
       return String(a.selector ?? "");
     case "type":
@@ -160,9 +167,19 @@ function summarizeArgs(tool: string, args: Record<string, unknown> | undefined):
       return String(a.code ?? "")
         .split("\n")[0]
         .slice(0, 60);
+    case "run_test":
+      return typeof a.name === "string" && a.name.length > 0
+        ? a.name
+        : Array.isArray(a.assertions)
+          ? `${a.assertions.length} assertions`
+          : "";
     case "open_page":
     case "reload_page":
       return String(a.url ?? "");
+    case "check_links":
+      return "links";
+    case "get_network_errors":
+      return "network";
     default:
       return "";
   }

@@ -97,6 +97,8 @@ export type ProviderInput = {
   isActive?: boolean;
 };
 
+export type PreviewRefreshBehavior = "auto" | "onsave" | "manual";
+
 export type AppSettings = {
   theme: "light" | "dark" | "system";
   fontSize: number;
@@ -107,6 +109,7 @@ export type AppSettings = {
   autoSave: boolean;
   formatOnSave: boolean;
   defaultViewport: "desktop" | "tablet" | "mobile";
+  previewRefreshBehavior: PreviewRefreshBehavior;
   autoReload: boolean;
   consoleVisible: boolean;
   errorOverlay: boolean;
@@ -123,6 +126,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoSave: true,
   formatOnSave: false,
   defaultViewport: "desktop",
+  previewRefreshBehavior: "auto",
   autoReload: true,
   consoleVisible: true,
   errorOverlay: true,
@@ -172,6 +176,8 @@ export type ToolName =
   | "edit_file"
   | "delete_file"
   | "rename_file"
+  | "move_file"
+  | "replace_content"
   | "create_folder"
   | "search_files"
   | "open_page"
@@ -184,12 +190,17 @@ export type ToolName =
   | "select"
   | "wait"
   | "get_dom"
+  | "get_element"
+  | "inspect_element"
   | "get_console_logs"
   | "get_page_errors"
+  | "get_network_errors"
   | "take_screenshot"
   | "run_javascript"
+  | "run_test"
   | "check_page"
-  | "check_console";
+  | "check_console"
+  | "check_links";
 
 export const TOOL_LABELS: Record<ToolName, string> = {
   list_files: "List files",
@@ -199,6 +210,8 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   edit_file: "Edit file",
   delete_file: "Delete file",
   rename_file: "Rename file",
+  move_file: "Move file",
+  replace_content: "Replace content",
   create_folder: "Create folder",
   search_files: "Search files",
   open_page: "Open page",
@@ -211,10 +224,15 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   select: "Select option",
   wait: "Wait",
   get_dom: "Get DOM",
+  get_element: "Get element",
+  inspect_element: "Inspect element",
   get_console_logs: "Get console logs",
   get_page_errors: "Get page errors",
+  get_network_errors: "Get network errors",
   take_screenshot: "Take screenshot",
   run_javascript: "Run JavaScript",
+  run_test: "Run test",
   check_page: "Check page",
   check_console: "Check console",
+  check_links: "Check links",
 };

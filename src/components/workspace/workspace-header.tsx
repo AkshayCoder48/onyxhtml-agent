@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   Check,
   CircleAlert,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -232,6 +233,21 @@ export function WorkspaceHeader() {
               </Button>
             </TooltipTrigger>
             <TooltipContent>Save (⌘S)</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                onClick={() => setPreviewMode("preview")}
+                aria-label="Switch to preview"
+                className="h-8 gap-1.5 px-2 sm:px-3"
+              >
+                <Eye className="size-4" />
+                <span className="hidden text-sm sm:inline">Preview</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Switch to preview</TooltipContent>
           </Tooltip>
 
           <Tooltip>

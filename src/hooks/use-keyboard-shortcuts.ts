@@ -26,9 +26,17 @@ function isEditableTarget(e: KeyboardEvent): boolean {
 }
 
 function matches(e: KeyboardEvent, s: Shortcut): boolean {
+  // Guard against IME composition, Dead keys, and other events where `e.key`
+  // can be undefined or non-string (e.g. "Unidentified", "Dead", or undefined
+  // from synthetic/virtual keyboard events). Without this guard, calling
+  // `.toLowerCase()` throws "Cannot read properties of undefined".
+  if (typeof e.key !== "string" || typeof s.key !== "string") return false;
   const k = e.key.toLowerCase();
   const sk = s.key.toLowerCase();
   if (k !== sk) return false;
+  // Skip key events that originate from IME composition ("Process" key code)
+  // or unidentified keys — they should never trigger shortcuts.
+  if (k === "unidentified" || k === "dead" || k === "process") return false;
   const wantCtrl = s.ctrl ?? false;
   const wantMeta = s.meta ?? false;
   const wantShift = s.shift ?? false;

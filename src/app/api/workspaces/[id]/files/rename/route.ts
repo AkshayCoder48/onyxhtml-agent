@@ -38,14 +38,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: `Destination already exists: ${to}` }, { status: 409 });
   }
 
-  let fileResult: { id: string; path: string } | null = null;
+  let renamedFileId: string | null = null;
   await db.$transaction(async (tx) => {
     if (existing) {
       const updated = await tx.file.update({
         where: { id: existing.id },
         data: { path: to },
       });
-      fileResult = { id: updated.id, path: updated.path };
+      renamedFileId = updated.id;
     }
     for (const child of children) {
       const newChildPath = to + child.path.slice(from.length);
@@ -59,8 +59,8 @@ export async function POST(req: NextRequest, { params }: Params) {
   await db.workspace.update({ where: { id }, data: { updatedAt: new Date() } });
 
   // If we renamed a single file, return it
-  if (fileResult) {
-    const f = await db.file.findUnique({ where: { id: fileResult.id } });
+  if (renamedFileId) {
+    const f = await db.file.findUnique({ where: { id: renamedFileId } });
     if (f) {
       return NextResponse.json({
         file: {

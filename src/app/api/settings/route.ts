@@ -30,6 +30,7 @@ export async function PATCH(req: NextRequest) {
     "autoSave",
     "formatOnSave",
     "defaultViewport",
+    "previewRefreshBehavior",
     "autoReload",
     "consoleVisible",
     "errorOverlay",
@@ -38,7 +39,6 @@ export async function PATCH(req: NextRequest) {
   const patch: Partial<AppSettings> = {};
   for (const k of allowed) {
     if (body[k] !== undefined) {
-      // @ts-expect-error dynamic assignment
       patch[k] = body[k];
     }
   }

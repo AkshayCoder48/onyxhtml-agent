@@ -27,12 +27,17 @@ const BROWSER_TOOLS: ToolName[] = [
   "select",
   "wait",
   "get_dom",
+  "get_element",
+  "inspect_element",
   "get_console_logs",
   "get_page_errors",
+  "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "run_test",
   "check_page",
   "check_console",
+  "check_links",
 ];
 
 export function isBrowserTool(name: string): boolean {
@@ -163,6 +168,43 @@ export function getToolDefinitions(): ToolDefinition[] {
             to: { type: "string", description: "New relative path." },
           },
           required: ["from", "to"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "move_file",
+        description:
+          "Move a file or folder from `from` to `to`. Equivalent to rename_file: when `from` is a folder, all of its children are moved as well. Both paths must be relative.",
+        parameters: {
+          type: "object",
+          properties: {
+            from: { type: "string", description: "Current relative path of the file or folder." },
+            to: { type: "string", description: "New relative path." },
+          },
+          required: ["from", "to"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "replace_content",
+        description:
+          "Replace occurrences of `find` with `replace` inside an existing file. By default replaces ALL occurrences (all=true). Set all=false to replace only the first occurrence. Returns the count of replacements made.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Relative path of the file to edit." },
+            find: { type: "string", description: "The exact text to find (must not be empty)." },
+            replace: { type: "string", description: "The text to substitute for each match." },
+            all: {
+              type: "boolean",
+              description: "If true (default), replace every occurrence. If false, replace only the first.",
+            },
+          },
+          required: ["path", "find", "replace"],
         },
       },
     },
@@ -346,6 +388,36 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "get_element",
+        description:
+          "Return the outerHTML of the first element matching the given CSS selector, along with a summary of its computed style (display, visibility, opacity, position, color, background).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector of the element to retrieve." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "inspect_element",
+        description:
+          "Inspect a single element matched by a CSS selector. Returns tag name, attributes, text content, bounding client rect, and key computed style properties (display, visibility, opacity, position, color, backgroundColor).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector of the element to inspect." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "get_console_logs",
         description: "Return the list of console messages captured from the preview (log/info/warn/error).",
         parameters: { type: "object", properties: {}, required: [] },
@@ -356,6 +428,15 @@ export function getToolDefinitions(): ToolDefinition[] {
       function: {
         name: "get_page_errors",
         description: "Return the list of runtime page errors (uncaught exceptions and resource load failures).",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_network_errors",
+        description:
+          "Return the list of failed resource loads captured by the preview (LINK, SCRIPT, IMG that failed to load). Each entry has url, type, status=0, and a timestamp.",
         parameters: { type: "object", properties: {}, required: [] },
       },
     },
@@ -385,6 +466,34 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "run_test",
+        description:
+          "Run a small test suite against the preview. Each assertion evaluates `code` inside the preview and compares the result (stringified) to `expected` when provided. Returns an array of { label, pass, actual, expected }.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Optional name for the test run." },
+            assertions: {
+              type: "array",
+              description: "List of assertions to evaluate inside the preview.",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "Human-readable label for the assertion." },
+                  code: { type: "string", description: "JavaScript expression to evaluate." },
+                  expected: { type: "string", description: "Optional expected value (stringified). If omitted, the assertion passes as long as code does not throw." },
+                },
+                required: ["label", "code"],
+              },
+            },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "check_page",
         description:
           "Convenience tool: open the entry page (if not already), wait briefly, then return a summary of the visible text and console logs. Use to verify a page renders without errors.",
@@ -396,6 +505,15 @@ export function getToolDefinitions(): ToolDefinition[] {
       function: {
         name: "check_console",
         description: "Convenience tool: return both console logs and page errors in a single call.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "check_links",
+        description:
+          "Collect every <a href> element in the preview and return its href, trimmed text, and type (absolute, relative, anchor, or mailto). Useful for auditing navigation and dead links.",
         parameters: { type: "object", properties: {}, required: [] },
       },
     },
@@ -416,7 +534,10 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
       case "create_folder":
         return String(args.path ?? "");
       case "rename_file":
+      case "move_file":
         return `${args.from ?? ""} → ${args.to ?? ""}`;
+      case "replace_content":
+        return String(args.path ?? "");
       case "search_files":
         return String(args.query ?? "");
       case "open_page":
@@ -426,6 +547,8 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
       case "click":
       case "hover":
       case "get_dom":
+      case "get_element":
+      case "inspect_element":
         return String(args.selector ?? "");
       case "type":
         return String(args.selector ?? "");
@@ -441,14 +564,20 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "screenshot";
       case "run_javascript":
         return "JS";
+      case "run_test":
+        return typeof args.name === "string" ? args.name : "test";
       case "get_console_logs":
         return "console";
       case "get_page_errors":
         return "errors";
+      case "get_network_errors":
+        return "network";
       case "check_page":
         return "page";
       case "check_console":
         return "console";
+      case "check_links":
+        return "links";
       default:
         return "";
     }
@@ -535,7 +664,8 @@ export async function executeFileTool(
       });
       return { path };
     }
-    case "rename_file": {
+    case "rename_file":
+    case "move_file": {
       const from = safePath(String(args.from ?? ""));
       const to = safePath(String(args.to ?? ""));
       if (!from || !to) throw new Error("Invalid path");
@@ -553,6 +683,10 @@ export async function executeFileTool(
         where: { workspaceId_path: { workspaceId, path: to } },
       });
       if (destExists) throw new Error(`Destination already exists: ${to}`);
+      // If `from` is a folder, also reject if `to` is inside `from` (would create a cycle).
+      if (children.length > 0 && (to + "/").startsWith(from + "/")) {
+        throw new Error("Cannot move a folder into itself");
+      }
 
       await db.$transaction(async (tx) => {
         if (existing) {
@@ -570,6 +704,52 @@ export async function executeFileTool(
         }
       });
       return { from, to };
+    }
+    case "replace_content": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const find = String(args.find ?? "");
+      if (!find) throw new Error("`find` must not be empty");
+      const replace = String(args.replace ?? "");
+      const all = args.all !== false; // default true
+      const file = await db.file.findUnique({
+        where: { workspaceId_path: { workspaceId, path } },
+      });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const content = file.content;
+      let count = 0;
+      let next: string;
+      if (all) {
+        if (find === replace) {
+          // No-op but still count occurrences for the response.
+          count = content.split(find).length - 1;
+          next = content;
+        } else {
+          // Use split/join to replace all occurrences without regex escaping concerns.
+          const parts = content.split(find);
+          count = parts.length - 1;
+          next = parts.join(replace);
+        }
+      } else {
+        const idx = content.indexOf(find);
+        if (idx === -1) {
+          throw new Error(
+            `Text not found in ${path}. Make sure \`find\` matches exactly (including whitespace).`
+          );
+        }
+        next = content.slice(0, idx) + replace + content.slice(idx + find.length);
+        count = 1;
+      }
+      if (count === 0) {
+        throw new Error(
+          `Text not found in ${path}. Make sure \`find\` matches exactly (including whitespace).`
+        );
+      }
+      await db.file.update({
+        where: { id: file.id },
+        data: { content: next },
+      });
+      return { path, replaced: count };
     }
     case "create_folder": {
       const folder = safePath(String(args.path ?? ""));

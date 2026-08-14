@@ -38,6 +38,7 @@ export function useChatStream(bridge: Bridge | null) {
   // Use stable selectors so the hook doesn't re-subscribe on every render.
   // Action functions in zustand are stable references.
   const chatId = useChatStore((s) => s.chatId);
+  const messages = useChatStore((s) => s.messages);
   const appendMessage = useChatStore((s) => s.appendMessage);
   const startStreaming = useChatStore((s) => s.startStreaming);
   const stopStreaming = useChatStore((s) => s.stopStreaming);
@@ -349,5 +350,147 @@ export function useChatStream(bridge: Bridge | null) {
   // Keep the ref in sync so the retry action invokes the latest sendMessage.
   sendMessageRef.current = sendMessage;
 
-  return { sendMessage, stop, isStreaming, setChatId, setMessages };
+  // Derive the last user message content from the current messages array.
+  // The UI uses this to decide whether to render the Regenerate button — we
+  // only regenerate when there's a user message to regenerate from.
+  // (Computed inline rather than via useMemo so the React Compiler can
+  // optimize the component without manual memoization conflicts.)
+  let lastUserMessage = "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user") {
+      lastUserMessage = m.segments
+        .filter(
+          (s): s is Extract<MessageSegment, { type: "content" }> =>
+            s.type === "content"
+        )
+        .map((s) => s.content)
+        .join("");
+      break;
+    }
+  }
+
+  // Ref so the retry action from an error toast can re-invoke regenerate
+  // without a self-reference (mirrors the sendMessageRef pattern).
+  const regenerateRef = React.useRef<() => Promise<void>>(async () => {});
+
+  const regenerate = React.useCallback(async () => {
+    const localChatId = chatId ?? useChatStore.getState().chatId;
+    if (!localChatId) {
+      toast.error("No chat selected");
+      return;
+    }
+
+    // Don't allow regenerating while a stream is in flight — abort it first
+    // so we don't fight over the streamingMessageId slot.
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+
+    // Locally drop every message strictly AFTER the last user message —
+    // the server does the same DB-side, and we want the UI to match.
+    const current = useChatStore.getState().messages;
+    let lastUserIdx = -1;
+    for (let i = current.length - 1; i >= 0; i--) {
+      if (current[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx < 0) {
+      toast.error("Nothing to regenerate", {
+        description: "Send a message first.",
+      });
+      return;
+    }
+    const trimmed = current.slice(0, lastUserIdx + 1);
+    setMessages(trimmed);
+
+    const assistantId = uid("a");
+    const assistantMsg: Message = {
+      id: assistantId,
+      chatId: localChatId,
+      role: "assistant",
+      segments: [],
+      createdAt: new Date().toISOString(),
+    };
+    appendMessage(assistantMsg);
+    startStreaming(assistantId);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const stream = api.streamRegenerate(localChatId, controller.signal);
+      const { browserPending } = await consumeStream(
+        localChatId,
+        stream,
+        assistantId,
+        controller.signal
+      );
+      if (browserPending.length > 0 && !controller.signal.aborted) {
+        await executeBrowserToolsAndContinue(
+          localChatId,
+          browserPending,
+          assistantId,
+          controller.signal
+        );
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        const msg = err instanceof Error ? err.message : "Regenerate failed";
+        addErrorSegment(assistantId, msg);
+        toast.error("AI regenerate failed", {
+          description: msg,
+          action: {
+            label: "Retry",
+            onClick: () => void regenerateRef.current(),
+          },
+        });
+      }
+    } finally {
+      stopStreaming();
+      abortRef.current = null;
+      handledBrowserCallsRef.current = new Set();
+    }
+  }, [
+    chatId,
+    appendMessage,
+    startStreaming,
+    stopStreaming,
+    addErrorSegment,
+    consumeStream,
+    executeBrowserToolsAndContinue,
+    setMessages,
+  ]);
+
+  // Keep the ref in sync so the retry action invokes the latest regenerate.
+  regenerateRef.current = regenerate;
+
+  // Subscribe to the global `chat:regenerate` window event so any UI surface
+  // (the Regenerate button in chat-messages.tsx, the Retry action on an
+  // ErrorCard, a future keyboard shortcut, etc.) can trigger regeneration
+  // without needing direct access to this hook instance. The hook is the
+  // single owner of the streaming state, so it's the right place to centralize
+  // the side effect.
+  React.useEffect(() => {
+    function onRegenerate() {
+      void regenerateRef.current();
+    }
+    window.addEventListener("chat:regenerate", onRegenerate);
+    return () => {
+      window.removeEventListener("chat:regenerate", onRegenerate);
+    };
+  }, []);
+
+  return {
+    sendMessage,
+    stop,
+    regenerate,
+    isStreaming,
+    lastUserMessage,
+    setChatId,
+    setMessages,
+  };
 }

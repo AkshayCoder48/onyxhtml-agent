@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { History, MoreHorizontal, Pencil, Trash2, MessageSquare } from "lucide-react";
+import { History, MoreHorizontal, Pencil, Trash2, MessageSquare, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -62,7 +62,8 @@ export function ChatHistory() {
     };
     if (data) {
       for (const c of data) {
-        map[relativeDay(c.updatedAt)].push(c);
+        const key = relativeDay(c.updatedAt);
+        if (map[key]) map[key].push(c);
       }
     }
     return map;
@@ -98,6 +99,20 @@ export function ChatHistory() {
       });
     } finally {
       setRenameOpen(null);
+    }
+  }
+
+  async function handleDuplicate(id: string) {
+    try {
+      const { chat } = await api.duplicateChat(id);
+      await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
+      toast.success("Chat duplicated", {
+        description: chat.title,
+      });
+    } catch (e) {
+      toast.error("Duplicate failed", {
+        description: e instanceof Error ? e.message : undefined,
+      });
     }
   }
 
@@ -167,6 +182,11 @@ export function ChatHistory() {
                             }
                           >
                             <Pencil className="size-3.5" /> Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() => handleDuplicate(c.id)}
+                          >
+                            <Copy className="size-3.5" /> Duplicate
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onSelect={() => handleDelete(c.id)}

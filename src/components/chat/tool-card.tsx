@@ -26,10 +26,15 @@ const BROWSER_TOOLS = new Set([
   "hover",
   "select",
   "get_dom",
+  "get_element",
+  "inspect_element",
   "get_console_logs",
   "get_page_errors",
+  "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "run_test",
+  "check_links",
   "open_page",
   "reload_page",
 ]);
@@ -41,6 +46,8 @@ const FILE_TOOLS = new Set([
   "edit_file",
   "delete_file",
   "rename_file",
+  "move_file",
+  "replace_content",
   "list_files",
   "search_files",
   "create_folder",
@@ -259,7 +266,9 @@ function KVTable({ rows }: { rows: [string, string][] }) {
 function pickFileArg(tool: string, args: Record<string, unknown> | undefined): string | undefined {
   if (!args) return undefined;
   const a = args as Record<string, unknown>;
-  if (tool === "rename_file") return `${a.from ?? ""} → ${a.to ?? ""}`;
+  if (tool === "rename_file" || tool === "move_file")
+    return `${a.from ?? ""} → ${a.to ?? ""}`;
+  if (tool === "replace_content") return (a.path as string) ?? undefined;
   return (a.path ?? a.file ?? a.filename) as string | undefined;
 }
 
