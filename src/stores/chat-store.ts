@@ -19,6 +19,7 @@
 
 import { create } from "zustand";
 import type { Message, MessageSegment } from "@/lib/types";
+import type { AgentStatus } from "@/lib/streaming/types";
 
 type ChatState = {
   chatId: string | null;
@@ -26,6 +27,15 @@ type ChatState = {
   isStreaming: boolean;
   streamingMessageId: string | null;
   pendingBrowserTools: string[];
+
+  // ---- Agent status machine (PRD §3, §23) ----
+  // The UI derives its status display from these fields rather than a generic
+  // isLoading boolean, so the user sees meaningful progress ("Inspecting
+  // workspace…", "Editing index.html…") instead of indefinite "Thinking…".
+  agentStatus: AgentStatus;
+  agentStatusMessage: string | null; // human-readable detail
+  agentStatusAction: string | null; // short label for the current step
+  lastHeartbeatAt: number | null; // epoch ms of the last run.heartbeat event
 
   setChatId: (id: string | null) => void;
   setMessages: (msgs: Message[]) => void;
@@ -53,6 +63,15 @@ type ChatState = {
   ) => void;
 
   setPendingBrowserTools: (callIds: string[]) => void;
+
+  // ---- agent status mutators ----
+  setAgentStatus: (
+    status: AgentStatus,
+    message?: string,
+    currentAction?: string
+  ) => void;
+  setAgentProgress: (message?: string, progress?: number) => void;
+  setHeartbeat: (timestamp: number, currentStep?: string) => void;
 
   // Rename a message's ID. Used to reconcile the client-generated assistant
   // message ID (e.g. "a_abc123") with the server's DB message ID (e.g.
@@ -85,6 +104,10 @@ export const useChatStore = create<ChatState>((set) => ({
   isStreaming: false,
   streamingMessageId: null,
   pendingBrowserTools: [],
+  agentStatus: "idle",
+  agentStatusMessage: null,
+  agentStatusAction: null,
+  lastHeartbeatAt: null,
 
   setChatId: (id) =>
     set({
@@ -93,6 +116,10 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: false,
       streamingMessageId: null,
       pendingBrowserTools: [],
+      agentStatus: "idle",
+      agentStatusMessage: null,
+      agentStatusAction: null,
+      lastHeartbeatAt: null,
     }),
 
   setMessages: (msgs) => set({ messages: msgs }),
@@ -100,13 +127,40 @@ export const useChatStore = create<ChatState>((set) => ({
   appendMessage: (msg) => set((s) => ({ messages: [...s.messages, msg] })),
 
   startStreaming: (assistantId) =>
-    set({ isStreaming: true, streamingMessageId: assistantId }),
+    set({
+      isStreaming: true,
+      streamingMessageId: assistantId,
+      agentStatus: "planning",
+      agentStatusMessage: "Starting…",
+      agentStatusAction: null,
+      lastHeartbeatAt: Date.now(),
+    }),
 
   stopStreaming: () =>
-    set({ isStreaming: false, streamingMessageId: null, pendingBrowserTools: [] }),
+    set((s) => ({
+      isStreaming: false,
+      streamingMessageId: null,
+      pendingBrowserTools: [],
+      // If the agent never reached a terminal status, mark it completed so
+      // the UI doesn't stay stuck on "executing…". The stream ended, so from
+      // the UI's perspective the run is done.
+      agentStatus:
+        s.agentStatus === "completed" ||
+        s.agentStatus === "failed" ||
+        s.agentStatus === "cancelled"
+          ? s.agentStatus
+          : "completed",
+    })),
 
   clearMessages: () =>
-    set({ messages: [], isStreaming: false, streamingMessageId: null }),
+    set({
+      messages: [],
+      isStreaming: false,
+      streamingMessageId: null,
+      agentStatus: "idle",
+      agentStatusMessage: null,
+      agentStatusAction: null,
+    }),
 
   // ---- IMMEDIATE streaming mutators (no rAF, no debounce) ----
 
@@ -216,6 +270,25 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
 
   setPendingBrowserTools: (callIds) => set({ pendingBrowserTools: callIds }),
+
+  // ---- agent status mutators ----
+  setAgentStatus: (status, message, currentAction) =>
+    set({
+      agentStatus: status,
+      agentStatusMessage: message ?? null,
+      agentStatusAction: currentAction ?? null,
+      // A status update implies the run is alive — refresh the heartbeat.
+      lastHeartbeatAt: Date.now(),
+    }),
+
+  setAgentProgress: (message, _progress) =>
+    set({
+      agentStatusMessage: message ?? null,
+      lastHeartbeatAt: Date.now(),
+    }),
+
+  setHeartbeat: (timestamp, _currentStep) =>
+    set({ lastHeartbeatAt: timestamp }),
 
   renameMessage: (oldId, newId) =>
     set((s) => {

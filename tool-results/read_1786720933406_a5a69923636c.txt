@@ -1,0 +1,974 @@
+     1→import { db } from "@/lib/db";
+     2→import { buildFileTree, findEntryFile, safePath } from "@/lib/files";
+     3→import { parseJSON, stringifyJSON } from "@/lib/settings";
+     4→import {
+     5→  MessageSegment,
+     6→  Message as MessageType,
+     7→} from "@/lib/types";
+     8→// New canonical streaming event types (PRD §11). The OLD StreamEvent union
+     9→// from @/lib/types is replaced by this richer, fine-grained set.
+    10→import type { StreamEvent } from "@/lib/streaming/types";
+    11→import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
+    12→import {
+    13→  ChatMessage,
+    14→  getActiveProvider,
+    15→  streamChatCompletion,
+    16→  ToolCallRef,
+    17→} from "./provider";
+    18→import {
+    19→  executeFileTool,
+    20→  getToolDefinitions,
+    21→  getToolDetail,
+    22→  getToolLabel,
+    23→  isBrowserTool,
+    24→} from "./tools";
+    25→
+    26→const MAX_ROUNDS = 25;
+    27→
+    28→// ---------- SSE encoding helpers ----------
+    29→
+    30→export function sseEncode(obj: unknown): Uint8Array {
+    31→  const text = typeof obj === "string" ? obj : JSON.stringify(obj);
+    32→  return new TextEncoder().encode(`data: ${text}\n\n`);
+    33→}
+    34→
+    35→export const DONE_CHUNK = new TextEncoder().encode("data: [DONE]\n\n");
+    36→
+    37→export function sseResponse(stream: ReadableStream<Uint8Array>) {
+    38→  return new Response(stream, {
+    39→    headers: {
+    40→      "Content-Type": "text/event-stream",
+    41→      "Cache-Control": "no-cache, no-transform",
+    42→      "Connection": "keep-alive",
+    43→      "X-Accel-Buffering": "no",
+    44→    },
+    45→  });
+    46→}
+    47→
+    48→// ---------- Conversation building ----------
+    49→
+    50→function segmentsToContentText(segments: MessageSegment[]): string {
+    51→  return segments
+    52→    .filter((s) => s.type === "content")
+    53→    .map((s) => (s as { content: string }).content)
+    54→    .join("");
+    55→}
+    56→
+    57→// Convert stored DB messages into OpenAI-format chat messages.
+    58→function buildConversationFromMessages(
+    59→  systemPrompt: string,
+    60→  rows: { role: string; segments: string }[]
+    61→): ChatMessage[] {
+    62→  const out: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+    63→  for (const r of rows) {
+    64→    const segments = parseJSON<MessageSegment[]>(r.segments, []);
+    65→    if (r.role === "user") {
+    66→      const text = segmentsToContentText(segments) || "";
+    67→      out.push({ role: "user", content: text });
+    68→    } else if (r.role === "assistant") {
+    69→      const content = segmentsToContentText(segments) || null;
+    70→      const toolCalls: ToolCallRef[] = [];
+    71→      for (const s of segments) {
+    72→        if (s.type === "tool_call") {
+    73→          toolCalls.push({
+    74→            id: s.callId,
+    75→            type: "function",
+    76→            function: {
+    77→              name: s.tool,
+    78→              arguments: stringifyJSON(s.arguments ?? {}),
+    79→            },
+    80→          });
+    81→        }
+    82→      }
+    83→      const msg: ChatMessage = {
+    84→        role: "assistant",
+    85→        content,
+    86→      };
+    87→      if (toolCalls.length > 0) {
+    88→        (msg as { tool_calls?: ToolCallRef[] }).tool_calls = toolCalls;
+    89→      }
+    90→      out.push(msg);
+    91→
+    92→      // Append a `tool` message for each completed tool_call with a result
+    93→      for (const s of segments) {
+    94→        if (s.type === "tool_call") {
+    95→          const payload =
+    96→            s.status === "error"
+    97→              ? { error: s.error ?? "tool error" }
+    98→              : s.result ?? {};
+    99→          out.push({
+   100→            role: "tool",
+   101→            tool_call_id: s.callId,
+   102→            content: stringifyJSON(payload),
+   103→          });
+   104→        }
+   105→      }
+   106→    }
+   107→  }
+   108→  return out;
+   109→}
+   110→
+   111→// Build the system prompt with workspace context.
+   112→//
+   113→// CRITICAL: The AGENT.md operating manual is injected at the very TOP of the
+   114→// system prompt. The model literally cannot avoid reading it — it is the
+   115→// first thing in its context. The manual enforces the mandatory task
+   116→// lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.
+   117→//
+   118→// If the workspace has a user-edited AGENT.md, we use that version (the user
+   119→// may have customized the rules). Otherwise we fall back to the canonical
+   120→// AGENT_MD_CONTENT from src/lib/agent-md.ts.
+   121→function buildSystemPrompt(opts: {
+   122→  workspaceName: string;
+   123→  filePaths: string[];
+   124→  entryFile: string | null;
+   125→  activeFile: string | null;
+   126→  activeFileContent: string | null;
+   127→  selectedFiles: string[];
+   128→  agentMdContent: string | null;
+   129→}): string {
+   130→  const tree = buildFileTree(opts.filePaths);
+   131→  const treeText = renderTree(tree, 0);
+   132→  const agentMd = opts.agentMdContent ?? AGENT_MD_CONTENT;
+   133→
+   134→  const parts: string[] = [
+   135→    // ---- AGENT.md operating manual (injected FIRST so the model reads it) ----
+   136→    agentMd,
+   137→    "",
+   138→    "========================================================",
+   139→    "AGENT.md ENDS HERE — workspace context follows.",
+   140→    "========================================================",
+   141→    "",
+   142→    // ---- Workspace context ----
+   143→    `Workspace: ${opts.workspaceName}`,
+   144→    `Entry file: ${opts.entryFile ?? "(none)"}`,
+   145→    "",
+   146→    "File tree:",
+   147→    treeText || "(empty)",
+   148→  ];
+   149→  if (opts.activeFile && opts.activeFileContent != null) {
+   150→    parts.push(
+   151→      "",
+   152→      `Currently open file: ${opts.activeFile}`,
+   153→      "```",
+   154→      opts.activeFileContent.slice(0, 8000),
+   155→      "```"
+   156→    );
+   157→  }
+   158→  if (opts.selectedFiles.length > 0) {
+   159→    parts.push("", `User also referenced these files: ${opts.selectedFiles.join(", ")}`);
+   160→  }
+   161→  parts.push(
+   162→    "",
+   163→    "REMINDERS (these override any contrary instinct):",
+   164→    "- You ALREADY read AGENT.md above. Follow its lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.",
+   165→    "- Do NOT generate files when an edit would do. edit_file is the default for existing files.",
+   166→    "- Do NOT skip the TEST phase. After every meaningful change, call terminal_exec or take_screenshot to verify.",
+   167→    "- Do NOT end the turn without a written SUMMARY of what you changed and how you verified it.",
+   168→    "- The preview is already loaded with index.html. Do NOT call open_page first.",
+   169→    "- Keep explanations brief — one or two sentences before each action.",
+   170→    "- Do NOT repeat the same tool call more than twice. If a tool errors, read the message and adjust."
+   171→  );
+   172→  return parts.join("\n");
+   173→}
+   174→
+   175→function renderTree(
+   176→  nodes: { name: string; path: string; type: string; children?: any[] }[],
+   177→  depth: number
+   178→): string {
+   179→  const lines: string[] = [];
+   180→  for (const n of nodes) {
+   181→    const indent = "  ".repeat(depth);
+   182→    const marker = n.type === "folder" ? "📁" : "📄";
+   183→    lines.push(`${indent}${marker} ${n.name}`);
+   184→    if (n.children && n.children.length > 0) {
+   185→      lines.push(renderTree(n.children, depth + 1));
+   186→    }
+   187→  }
+   188→  return lines.join("\n");
+   189→}
+   190→
+   191→// ---------- Tool call accumulator ----------
+   192→
+   193→type ToolCallAccum = {
+   194→  callId: string;
+   195→  name: string;
+   196→  arguments: string;
+   197→  index: number;
+   198→};
+   199→
+   200→// ---------- Agent options ----------
+   201→
+   202→export type AgentOptions = {
+   203→  chatId: string;
+   204→  workspaceId: string;
+   205→  context?: {
+   206→    activeFile?: string | null;
+   207→    selectedFiles?: string[];
+   208→  };
+   209→  // For /continue: results from client-side browser tool execution
+   210→  resumeResults?: {
+   211→    callId: string;
+   212→    result?: unknown;
+   213→    error?: string;
+   214→  }[];
+   215→};
+   216→
+   217→// ---------- The main agent loop ----------
+   218→
+   219→export async function runAgentAsReadableStream(
+   220→  options: AgentOptions
+   221→): Promise<ReadableStream<Uint8Array>> {
+   222→  const encoder = new TextEncoder();
+   223→  const decoder = new TextEncoder(); // placeholder; we use encoder for SSE
+   224→  void decoder;
+   225→
+   226→  const stream = new ReadableStream<Uint8Array>({
+   227→    async start(controller) {
+   228→      const send = (obj: StreamEvent | string) => {
+   229→        try {
+   230→          controller.enqueue(sseEncode(obj));
+   231→        } catch {
+   232→          // controller might be closed
+   233→        }
+   234→      };
+   235→      const sendDone = () => {
+   236→        try {
+   237→          controller.enqueue(DONE_CHUNK);
+   238→        } catch {}
+   239→        try {
+   240→          controller.close();
+   241→        } catch {}
+   242→      };
+   243→
+   244→      try {
+   245→        await runAgentLoop({ ...options, send, sendDone });
+   246→      } catch (e) {
+   247→        const msg = e instanceof Error ? e.message : String(e);
+   248→        try {
+   249→          send({ type: "stream.error", messageId: "", content: msg });
+   250→        } catch {}
+   251→        sendDone();
+   252→      }
+   253→    },
+   254→  });
+   255→
+   256→  void encoder;
+   257→  return stream;
+   258→}
+   259→
+   260→type LoopCtx = {
+   261→  chatId: string;
+   262→  workspaceId: string;
+   263→  context?: {
+   264→    activeFile?: string | null;
+   265→    selectedFiles?: string[];
+   266→  };
+   267→  resumeResults?: {
+   268→    callId: string;
+   269→    result?: unknown;
+   270→    error?: string;
+   271→  }[];
+   272→  send: (obj: StreamEvent | string) => void;
+   273→  sendDone: () => void;
+   274→};
+   275→
+   276→async function runAgentLoop(ctx: LoopCtx) {
+   277→  // 1. Load workspace + files
+   278→  const workspace = await db.workspace.findUnique({
+   279→    where: { id: ctx.workspaceId },
+   280→  });
+   281→  if (!workspace) {
+   282→    ctx.send({ type: "stream.error", messageId: "", content: "Workspace not found" });
+   283→    ctx.sendDone();
+   284→    return;
+   285→  }
+   286→  const files = await db.file.findMany({
+   287→    where: { workspaceId: workspace.id },
+   288→    orderBy: { path: "asc" },
+   289→  });
+   290→  const filePaths = files.map((f) => f.path);
+   291→  const entryFile = findEntryFile(filePaths);
+   292→
+   293→  let activeFile: string | null = workspace.activeFile ?? null;
+   294→  if (ctx.context?.activeFile !== undefined) {
+   295→    activeFile = ctx.context.activeFile ?? null;
+   296→  }
+   297→  const selectedFiles = ctx.context?.selectedFiles ?? [];
+   298→
+   299→  // Load active file content (capped) for context
+   300→  let activeFileContent: string | null = null;
+   301→  if (activeFile) {
+   302→    const af = files.find((f) => f.path === activeFile);
+   303→    if (af) activeFileContent = af.content;
+   304→  }
+   305→
+   306→  // Load the workspace's AGENT.md (if it exists). The user may have edited
+   307→  // it to customize the agent's behavior — we respect those edits. If the
+   308→  // workspace doesn't have one yet, ensureAgentMd() in the workspaces API
+   309→  // route will create it on next access, but we also fall back to the
+   310→  // canonical AGENT_MD_CONTENT here so the system prompt always has it.
+   311→  const agentMdRow = files.find((f) => f.path === AGENT_MD_FILENAME);
+   312→  const agentMdContent = agentMdRow ? agentMdRow.content : null;
+   313→
+   314→  const systemPrompt = buildSystemPrompt({
+   315→    workspaceName: workspace.name,
+   316→    filePaths,
+   317→    entryFile,
+   318→    activeFile,
+   319→    activeFileContent,
+   320→    selectedFiles,
+   321→    agentMdContent,
+   322→  });
+   323→
+   324→  // 2. Get active provider
+   325→  const provider = await getActiveProvider();
+   326→  if (!provider) {
+   327→    ctx.send({ type: "stream.error", messageId: "", content: "No active provider configured. Add one in Settings → Providers." });
+   328→    ctx.sendDone();
+   329→    return;
+   330→  }
+   331→
+   332→  // 3. Load chat messages
+   333→  const dbMessages = await db.message.findMany({
+   334→    where: { chatId: ctx.chatId },
+   335→    orderBy: { createdAt: "asc" },
+   336→  });
+   337→  if (dbMessages.length === 0) {
+   338→    ctx.send({ type: "stream.error", messageId: "", content: "Chat has no messages" });
+   339→    ctx.sendDone();
+   340→    return;
+   341→  }
+   342→
+   343→  // Find the latest assistant message (the empty one created for this turn, or the persisted one being resumed)
+   344→  let assistantRow = dbMessages[dbMessages.length - 1];
+   345→  if (assistantRow.role !== "assistant") {
+   346→    // find last assistant
+   347→    for (let i = dbMessages.length - 1; i >= 0; i--) {
+   348→      if (dbMessages[i].role === "assistant") {
+   349→        assistantRow = dbMessages[i];
+   350→        break;
+   351→      }
+   352→    }
+   353→  }
+   354→  if (!assistantRow || assistantRow.role !== "assistant") {
+   355→    ctx.send({ type: "stream.error", messageId: "", content: "No assistant message to stream into" });
+   356→    ctx.sendDone();
+   357→    return;
+   358→  }
+   359→
+   360→  // Stable messageId for the entire streaming turn (PRD §10). Every event
+   361→  // emitted by this run carries this id so the client can route deltas to
+   362→  // the correct assistant message without ambiguity.
+   363→  const messageId = assistantRow.id;
+   364→
+   365→  let segments: MessageSegment[] = parseJSON<MessageSegment[]>(
+   366→    assistantRow.segments,
+   367→    []
+   368→  );
+   369→
+   370→  // 4. Build conversation (exclude the empty assistant message we're about to fill)
+   371→  const convoRows = dbMessages.filter((m) => m.id !== assistantRow.id);
+   372→  let conversation = buildConversationFromMessages(systemPrompt, convoRows);
+   373→
+   374→  // 5. If resuming (browser tools), apply results to pending tool_call segments.
+   375→  //
+   376→  // CRITICAL: We must reconstruct the assistant message (with its tool_calls)
+   377→  // from the persisted segments and add it to the conversation BEFORE the
+   378→  // tool result messages. Without this, the tool messages are "orphaned" —
+   379→  // they reference tool_call_ids that don't appear in any preceding
+   380→  // assistant message. The provider will reject the conversation or, worse,
+   381→  // the model will be confused and repeat the same tool calls in a loop
+   382→  // (which was the "spinner keeps running" / infinite-loop symptom).
+   383→  if (ctx.resumeResults && ctx.resumeResults.length > 0) {
+   384→    // Reconstruct the assistant message from the current segments. This
+   385→    // includes the content text + all tool_call segments (with their
+   386→    // original arguments). We need this so the provider sees the full
+   387→    // assistant turn (text + tool_calls) before the tool results.
+   388→    const assistantContent = segmentsToContentText(segments);
+   389→    const assistantToolCalls: ToolCallRef[] = [];
+   390→    for (const s of segments) {
+   391→      if (s.type === "tool_call") {
+   392→        assistantToolCalls.push({
+   393→          id: s.callId,
+   394→          type: "function",
+   395→          function: {
+   396→            name: s.tool,
+   397→            arguments: stringifyJSON(s.arguments ?? {}),
+   398→          },
+   399→        });
+   400→      }
+   401→    }
+   402→    if (assistantToolCalls.length > 0) {
+   403→      const assistantMsg: ChatMessage = {
+   404→        role: "assistant",
+   405→        content: assistantContent || null,
+   406→      };
+   407→      (assistantMsg as { tool_calls?: ToolCallRef[] }).tool_calls = assistantToolCalls;
+   408→      conversation.push(assistantMsg);
+   409→    }
+   410→
+   411→    // Now apply the tool results — each tool message follows the assistant
+   412→    // message that issued the tool_call.
+   413→    for (const r of ctx.resumeResults) {
+   414→      const segIdx = segments.findIndex(
+   415→        (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+   416→          s.type === "tool_call" && s.callId === r.callId
+   417→      );
+   418→      if (segIdx >= 0) {
+   419→        const seg = segments[segIdx] as Extract<MessageSegment, { type: "tool_call" }>;
+   420→        seg.status = r.error ? "error" : "success";
+   421→        seg.result = r.result;
+   422→        seg.error = r.error;
+   423→        // Emit the new granular tool.result + tool.complete events so the
+   424→        // client's ToolStore transitions the card out of the running state.
+   425→        ctx.send({
+   426→          type: "tool.result",
+   427→          messageId,
+   428→          toolCallId: r.callId,
+   429→          status: seg.status,
+   430→          result: r.result,
+   431→          error: r.error,
+   432→          label: seg.label,
+   433→          detail: seg.detail,
+   434→        });
+   435→        ctx.send({
+   436→          type: "tool.complete",
+   437→          messageId,
+   438→          toolCallId: r.callId,
+   439→        });
+   440→        // Append tool message to conversation
+   441→        const payload = r.error ? { error: r.error } : r.result ?? {};
+   442→        conversation.push({
+   443→          role: "tool",
+   444→          tool_call_id: r.callId,
+   445→          content: stringifyJSON(payload),
+   446→        });
+   447→      } else {
+   448→        // No matching pending segment — still append a tool message so the model can continue
+   449→        const payload = r.error ? { error: r.error } : r.result ?? {};
+   450→        conversation.push({
+   451→          role: "tool",
+   452→          tool_call_id: r.callId,
+   453→          content: stringifyJSON(payload),
+   454→        });
+   455→      }
+   456→    }
+   457→    // Persist updated segments
+   458→    await db.message.update({
+   459→      where: { id: assistantRow.id },
+   460→      data: { segments: stringifyJSON(segments) },
+   461→    });
+   462→  }
+   463→
+   464→  // 6. Agentic loop
+   465→  const toolDefs = getToolDefinitions();
+   466→  // Global counter (across rounds) so every tool call gets a unique callId.
+   467→  // The provider may reuse ids like `call_0` each round, which would collide
+   468→  // in the message segments / React keys. We remap to `tc_<runTag>_<n>` per
+   469→  // round, where `runTag` is a short random suffix unique to this agent run
+   470→  // (so /continue calls don't collide with the original run's callIds).
+   471→  const runTag = Math.random().toString(36).slice(2, 6);
+   472→  let callIdSeq = 0;
+   473→
+   474→  // Emit stream.start ONCE at the beginning of the agent run so the client
+   475→  // knows the stream is live (PRD §11 StreamCompleteEvent / lifecycle).
+   476→  ctx.send({ type: "stream.start", messageId });
+   477→
+   478→  for (let round = 0; round < MAX_ROUNDS; round++) {
+   479→    let reasoningText = "";
+   480→    let contentText = "";
+   481→    const toolCalls: ToolCallAccum[] = [];
+   482→    const roundCallIdMap = new Map<string, string>();
+   483→    // Tracks whether we've already emitted a tool.start event for a given
+   484→    // callId, so we emit it exactly once and then stream argument deltas.
+   485→    const startedToolCallIds = new Set<string>();
+   486→    let hadError = false;
+   487→    let errorMsg = "";
+   488→
+   489→    try {
+   490→      for await (const ev of streamChatCompletion(provider, {
+   491→        messages: conversation,
+   492→        tools: toolDefs,
+   493→      })) {
+   494→        if (ev.type === "reasoning_content") {
+   495→          // PRD §7: emit the delta IMMEDIATELY. No accumulation, no batching.
+   496→          reasoningText += ev.content;
+   497→          ctx.send({ type: "thinking.delta", messageId, delta: ev.content });
+   498→        } else if (ev.type === "content") {
+   499→          // PRD §7, §12: emit text.delta immediately — character-by-character
+   500→          // as the provider sends it. The client appends to the streaming
+   501→          // content segment.
+   502→          contentText += ev.content;
+   503→          ctx.send({ type: "text.delta", messageId, delta: ev.content });
+   504→        } else if (ev.type === "tool_call_delta") {
+   505→          // Remap the provider's callId to a globally-unique id for this round.
+   506→          let mapped = roundCallIdMap.get(ev.callId);
+   507→          if (!mapped) {
+   508→            mapped = `tc_${runTag}_${callIdSeq++}`;
+   509→            roundCallIdMap.set(ev.callId, mapped);
+   510→          }
+   511→          const existing = toolCalls.find((t) => t.callId === mapped);
+   512→          if (existing) {
+   513→            if (ev.argumentsDelta) existing.arguments += ev.argumentsDelta;
+   514→            if (ev.name && !existing.name) existing.name = ev.name;
+   515→          } else {
+   516→            toolCalls.push({
+   517→              callId: mapped,
+   518→              name: ev.name ?? "",
+   519→              arguments: ev.argumentsDelta ?? "",
+   520→              index: ev.index,
+   521→            });
+   522→          }
+   523→
+   524→          const accum = toolCalls.find((t) => t.callId === mapped)!;
+   525→          if (accum.name) {
+   526→            // PRD §13, §14: emit tool.start exactly once (when the name first
+   527→            // arrives), then stream tool.arguments.delta for every subsequent
+   528→            // argument fragment. The client ToolStore accumulates the raw
+   529→            // arguments string and best-effort parses it for display.
+   530→            if (!startedToolCallIds.has(accum.callId)) {
+   531→              startedToolCallIds.add(accum.callId);
+   532→              ctx.send({
+   533→                type: "tool.start",
+   534→                messageId,
+   535→                toolCallId: accum.callId,
+   536→                tool: accum.name,
+   537→                label: getToolLabel(accum.name),
+   538→              });
+   539→              // If the first delta already carried argument bytes, emit them
+   540→              // as the first arguments.delta so the client sees them.
+   541→              if (accum.arguments) {
+   542→                ctx.send({
+   543→                  type: "tool.arguments.delta",
+   544→                  messageId,
+   545→                  toolCallId: accum.callId,
+   546→                  delta: accum.arguments,
+   547→                });
+   548→              }
+   549→            } else if (ev.argumentsDelta) {
+   550→              // Subsequent argument fragments — emit the DELTA, not the
+   551→              // accumulated text. The client appends.
+   552→              ctx.send({
+   553→                type: "tool.arguments.delta",
+   554→                messageId,
+   555→                toolCallId: accum.callId,
+   556→                delta: ev.argumentsDelta,
+   557→              });
+   558→            }
+   559→          }
+   560→        } else if (ev.type === "error") {
+   561→          hadError = true;
+   562→          errorMsg = ev.content;
+   563→          break;
+   564→        }
+   565→      }
+   566→    } catch (e) {
+   567→      hadError = true;
+   568→      errorMsg = e instanceof Error ? e.message : String(e);
+   569→    }
+   570→
+   571→    if (hadError) {
+   572→      // Persist what we have and exit
+   573→      if (reasoningText) {
+   574→        segments = mergeSegment(segments, { type: "thinking", content: reasoningText });
+   575→      }
+   576→      if (contentText) {
+   577→        segments = mergeSegment(segments, { type: "content", content: contentText });
+   578→      }
+   579→      await db.message.update({
+   580→        where: { id: assistantRow.id },
+   581→        data: { segments: stringifyJSON(segments) },
+   582→      });
+   583→      ctx.send({ type: "stream.error", messageId, content: errorMsg });
+   584→      ctx.sendDone();
+   585→      return;
+   586→    }
+   587→
+   588→    // Merge accumulated reasoning + content into segments (for persistence)
+   589→    if (reasoningText) {
+   590→      segments = mergeSegment(segments, { type: "thinking", content: reasoningText });
+   591→    }
+   592→    if (contentText) {
+   593→      segments = mergeSegment(segments, { type: "content", content: contentText });
+   594→    }
+   595→
+   596→    // No tool calls → done
+   597→    if (toolCalls.length === 0) {
+   598→      await db.message.update({
+   599→        where: { id: assistantRow.id },
+   600→        data: { segments: stringifyJSON(segments) },
+   601→      });
+   602→      await db.chat.update({
+   603→        where: { id: ctx.chatId },
+   604→        data: { updatedAt: new Date() },
+   605→      });
+   606→      ctx.send({ type: "stream.complete", messageId });
+   607→      ctx.sendDone();
+   608→      return;
+   609→    }
+   610→
+   611→    // Filter out tool calls that were truncated by the model hitting its
+   612→    // token limit. A tool call is "truncated" if:
+   613→    //   - it has no name (only argument fragments arrived), OR
+   614→    //   - the arguments JSON is unparseable AND non-empty (incomplete JSON).
+   615→    // Truncated calls are dropped with a warning so the model can recover on
+   616→    // the next round instead of executing a half-formed tool with empty args.
+   617→    const validToolCalls: ToolCallAccum[] = [];
+   618→    const droppedToolCalls: ToolCallAccum[] = [];
+   619→    for (const tc of toolCalls) {
+   620→      const hasName = Boolean(tc.name);
+   621→      let argsParseable = true;
+   622→      try {
+   623→        if (tc.arguments && tc.arguments.trim()) {
+   624→          JSON.parse(tc.arguments);
+   625→        }
+   626→      } catch {
+   627→        argsParseable = false;
+   628→      }
+   629→      if (hasName && (argsParseable || !tc.arguments || !tc.arguments.trim())) {
+   630→        validToolCalls.push(tc);
+   631→      } else {
+   632→        droppedToolCalls.push(tc);
+   633→      }
+   634→    }
+   635→    if (droppedToolCalls.length > 0) {
+   636→      // Surface the dropped (truncated) tool calls as content so the user can
+   637→      // see what happened, then continue with the valid ones.
+   638→      const note =
+   639→        droppedToolCalls.length === 1
+   640→          ? "⚠️ One tool call was truncated (the model ran out of tokens mid-argument) and has been skipped."
+   641→          : `⚠️ ${droppedToolCalls.length} tool calls were truncated (the model ran out of tokens mid-argument) and have been skipped.`;
+   642→      segments = mergeSegment(segments, { type: "content", content: `\n\n${note}\n` });
+   643→      ctx.send({ type: "text.delta", messageId, delta: `\n\n${note}\n` });
+   644→    }
+   645→    const toolCallsToProcess = validToolCalls;
+   646→
+   647→    // If all tool calls were truncated, treat this as a final round —
+   648→    // there's nothing to execute and no tool message to send back, so the
+   649→    // model would just loop. Emit done and finish.
+   650→    if (toolCallsToProcess.length === 0) {
+   651→      await db.message.update({
+   652→        where: { id: assistantRow.id },
+   653→        data: { segments: stringifyJSON(segments) },
+   654→      });
+   655→      await db.chat.update({
+   656→        where: { id: ctx.chatId },
+   657→        data: { updatedAt: new Date() },
+   658→      });
+   659→      ctx.send({ type: "stream.complete", messageId });
+   660→      ctx.sendDone();
+   661→      return;
+   662→    }
+   663→
+   664→    // Build the assistant message with tool_calls to add to the conversation
+   665→    const toolCallRefs: ToolCallRef[] = toolCallsToProcess.map((tc) => ({
+   666→      id: tc.callId,
+   667→      type: "function",
+   668→      function: { name: tc.name, arguments: tc.arguments || "{}" },
+   669→    }));
+   670→    conversation.push({
+   671→      role: "assistant",
+   672→      content: contentText || null,
+   673→      tool_calls: toolCallRefs,
+   674→    });
+   675→
+   676→    // Process each tool call
+   677→    const browserCallIds: string[] = [];
+   678→    for (const tc of toolCallsToProcess) {
+   679→      const label = getToolLabel(tc.name);
+   680→      let args: Record<string, unknown> = {};
+   681→      try {
+   682→        args = tc.arguments ? JSON.parse(tc.arguments) : {};
+   683→      } catch {
+   684→        args = {};
+   685→      }
+   686→      const detail = getToolDetail(tc.name, args);
+   687→      const isBrowser = isBrowserTool(tc.name);
+   688→
+   689→      // Emit tool.execute to transition the card from "generating" →
+   690→      // "executing" (PRD §15). For browser tools this is the signal that
+   691→      // the client should now run the tool against the preview iframe.
+   692→      // For file tools it marks the start of server-side execution.
+   693→      ctx.send({ type: "tool.execute", messageId, toolCallId: tc.callId });
+   694→
+   695→      // Ensure a persisted tool_call segment exists (for hydration after refresh).
+   696→      const existingSegIdx = segments.findIndex(
+   697→        (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+   698→          s.type === "tool_call" && s.callId === tc.callId
+   699→      );
+   700→      if (existingSegIdx < 0) {
+   701→        segments.push({
+   702→          type: "tool_call",
+   703→          tool: tc.name,
+   704→          arguments: args,
+   705→          argumentsText: tc.arguments,
+   706→          callId: tc.callId,
+   707→          status: "running",
+   708→          label,
+   709→          detail,
+   710→        });
+   711→      } else {
+   712→        const seg = segments[existingSegIdx] as Extract<MessageSegment, { type: "tool_call" }>;
+   713→        seg.arguments = args;
+   714→        seg.argumentsText = tc.arguments;
+   715→        seg.detail = detail;
+   716→        seg.label = label;
+   717→      }
+   718→
+   719→      if (isBrowser) {
+   720→        // Browser tools are executed client-side against the preview iframe.
+   721→        // We do NOT execute them here — we collect their callIds and emit
+   722→        // browser.tools_pending so the client runs them, then calls /continue.
+   723→        browserCallIds.push(tc.callId);
+   724→        // We do NOT append a tool message yet — that happens on /continue
+   725→      } else {
+   726→        // ---- File tool: stream the file content LIVE before writing (PRD §20, §21) ----
+   727→        //
+   728→        // For tools that write file content (create_file, write_file, edit_file,
+   729→        // replace_content), emit file.start → file.delta* → file.complete so the
+   730→        // editor shows the file being generated character-by-character. We emit
+   731→        // the deltas from the argument content BEFORE executing the tool, then
+   732→        // execute the actual DB write. This gives the user real-time feedback.
+   733→        const filePathForStream = pickFilePathForStreaming(tc.name, args);
+   734→        if (filePathForStream) {
+   735→          const contentToStream = pickFileContentForStreaming(tc.name, args);
+   736→          const operation: "create" | "write" | "append" | "replace" | "patch" | "delete" =
+   737→            tc.name === "create_file"
+   738→              ? "create"
+   739→              : tc.name === "edit_file"
+   740→              ? "patch"
+   741→              : tc.name === "replace_content"
+   742→              ? "replace"
+   743→              : "write";
+   744→          ctx.send({
+   745→            type: "file.start",
+   746→            messageId,
+   747→            toolCallId: tc.callId,
+   748→            path: filePathForStream,
+   749→            operation,
+   750→          });
+   751→          if (contentToStream) {
+   752→            // Stream in ~256-byte chunks. This is NOT artificial throttling of
+   753→            // the AI stream — the AI has already produced this content. We chunk
+   754→            // it only so the editor can apply incremental updates without
+   755→            // blocking the main thread on a single huge insertion (PRD §28
+   756→            // backpressure, §23 prevent editor flickering).
+   757→            const CHUNK = 256;
+   758→            for (let i = 0; i < contentToStream.length; i += CHUNK) {
+   759→              ctx.send({
+   760→                type: "file.delta",
+   761→                messageId,
+   762→                toolCallId: tc.callId,
+   763→                path: filePathForStream,
+   764→                delta: contentToStream.slice(i, i + CHUNK),
+   765→              });
+   766→            }
+   767→          }
+   768→          ctx.send({
+   769→            type: "file.complete",
+   770→            messageId,
+   771→            toolCallId: tc.callId,
+   772→            path: filePathForStream,
+   773→            bytes: contentToStream ? contentToStream.length : 0,
+   774→          });
+   775→        }
+   776→
+   777→        // Execute file tool server-side
+   778→        let result: unknown;
+   779→        let status: "success" | "error" = "success";
+   780→        let errorMsg: string | undefined;
+   781→        try {
+   782→          result = await executeFileTool(tc.name, args, workspace.id);
+   783→        } catch (e) {
+   784→          status = "error";
+   785→          errorMsg = e instanceof Error ? e.message : String(e);
+   786→          result = { error: errorMsg };
+   787→        }
+   788→
+   789→        // Update persisted segment
+   790→        const segIdx2 = segments.findIndex(
+   791→          (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
+   792→            s.type === "tool_call" && s.callId === tc.callId
+   793→        );
+   794→        if (segIdx2 >= 0) {
+   795→          const seg = segments[segIdx2] as Extract<MessageSegment, { type: "tool_call" }>;
+   796→          seg.status = status;
+   797→          seg.result = result;
+   798→          seg.error = errorMsg;
+   799→        }
+   800→
+   801→        // Emit tool.result + tool.complete (PRD §13 lifecycle)
+   802→        ctx.send({
+   803→          type: "tool.result",
+   804→          messageId,
+   805→          toolCallId: tc.callId,
+   806→          status,
+   807→          result,
+   808→          error: errorMsg,
+   809→          label,
+   810→          detail,
+   811→        });
+   812→        ctx.send({ type: "tool.complete", messageId, toolCallId: tc.callId });
+   813→
+   814→        // Append tool message to conversation
+   815→        const payload = status === "error" ? { error: errorMsg ?? "tool error" } : result;
+   816→        conversation.push({
+   817→          role: "tool",
+   818→          tool_call_id: tc.callId,
+   819→          content: stringifyJSON(payload ?? {}),
+   820→        });
+   821→      }
+   822→    }
+   823→
+   824→    // Persist segments at end of round
+   825→    await db.message.update({
+   826→      where: { id: assistantRow.id },
+   827→      data: { segments: stringifyJSON(segments) },
+   828→    });
+   829→
+   830→    // If there are pending browser tools → pause and resume
+   831→    if (browserCallIds.length > 0) {
+   832→      ctx.send({
+   833→        type: "browser.tools_pending",
+   834→        messageId,
+   835→        callIds: browserCallIds,
+   836→      });
+   837→      ctx.sendDone();
+   838→      return;
+   839→    }
+   840→
+   841→    // Otherwise loop again (file tools ran; model may produce more)
+   842→  }
+   843→
+   844→  // Max rounds exceeded — emit stream.complete (not error) so the spinner stops.
+   845→  // The model has been working for 25 rounds; that's a legitimate stopping
+   846→  // point, not a failure. Persist what we have and finish gracefully.
+   847→  await db.message.update({
+   848→    where: { id: assistantRow.id },
+   849→    data: { segments: stringifyJSON(segments) },
+   850→  });
+   851→  await db.chat.update({
+   852→    where: { id: ctx.chatId },
+   853→    data: { updatedAt: new Date() },
+   854→  });
+   855→  ctx.send({
+   856→    type: "text.delta",
+   857→    messageId,
+   858→    delta:
+   859→      "\n\n_I've reached the maximum number of reasoning rounds for this turn. If you'd like me to continue, please send another message._\n",
+   860→  });
+   861→  ctx.send({ type: "stream.complete", messageId });
+   862→  ctx.sendDone();
+   863→}
+   864→
+   865→// ---------- File streaming helpers ----------
+   866→//
+   867→// Determine which file-writing tools should stream their content to the live
+   868→// editor, and extract the (path, content) pair from the parsed arguments.
+   869→
+   870→function pickFilePathForStreaming(
+   871→  toolName: string,
+   872→  args: Record<string, unknown>
+   873→): string | null {
+   874→  try {
+   875→    switch (toolName) {
+   876→      case "create_file":
+   877→      case "write_file":
+   878→      case "edit_file":
+   879→      case "replace_content":
+   880→        return safePath(String(args.path ?? "")) || null;
+   881→      default:
+   882→        return null;
+   883→    }
+   884→  } catch {
+   885→    return null;
+   886→  }
+   887→}
+   888→
+   889→function pickFileContentForStreaming(
+   890→  toolName: string,
+   891→  args: Record<string, unknown>
+   892→): string | null {
+   893→  try {
+   894→    switch (toolName) {
+   895→      case "create_file":
+   896→      case "write_file":
+   897→        return String(args.content ?? "");
+   898→      case "edit_file": {
+   899→        // For edit_file we stream the NEW content (what will replace the old).
+   900→        return String(args.newContent ?? "");
+   901→      }
+   902→      case "replace_content": {
+   903→        // For replace_content we stream the replacement text.
+   904→        return String(args.replace ?? "");
+   905→      }
+   906→      default:
+   907→        return null;
+   908→    }
+   909→  } catch {
+   910→    return null;
+   911→  }
+   912→}
+   913→
+   914→// Merge a thinking/content segment, folding into the previous one if same type.
+   915→function mergeSegment(
+   916→  segments: MessageSegment[],
+   917→  seg: MessageSegment
+   918→): MessageSegment[] {
+   919→  const last = segments[segments.length - 1];
+   920→  if (last && last.type === seg.type) {
+   921→    if (last.type === "thinking" && seg.type === "thinking") {
+   922→      last.content += seg.content;
+   923→    } else if (last.type === "content" && seg.type === "content") {
+   924→      last.content += seg.content;
+   925→    } else {
+   926→      segments.push(seg);
+   927→    }
+   928→  } else {
+   929→    segments.push(seg);
+   930→  }
+   931→  return segments;
+   932→}
+   933→
+   934→// ---------- Helpers used by the route handlers ----------
+   935→
+   936→// Serialize a DB message row to the API Message type, parsing segments.
+   937→export function serializeMessage(row: {
+   938→  id: string;
+   939→  chatId: string;
+   940→  role: string;
+   941→  segments: string;
+   942→  createdAt: Date;
+   943→}): MessageType {
+   944→  const segments = parseJSON<MessageSegment[]>(row.segments, []);
+   945→  return {
+   946→    id: row.id,
+   947→    chatId: row.chatId,
+   948→    role: row.role as "user" | "assistant",
+   949→    segments,
+   950→    createdAt: row.createdAt.toISOString(),
+   951→  };
+   952→}
+   953→
+   954→// Auto-title a chat from the first user message content.
+   955→export async function maybeAutoTitle(chatId: string): Promise<void> {
+   956→  const chat = await db.chat.findUnique({ where: { id: chatId } });
+   957→  if (!chat) return;
+   958→  if (chat.title !== "New Chat") return;
+   959→  const firstUser = await db.message.findFirst({
+   960→    where: { chatId, role: "user" },
+   961→    orderBy: { createdAt: "asc" },
+   962→  });
+   963→  if (!firstUser) return;
+   964→  const segs = parseJSON<MessageSegment[]>(firstUser.segments, []);
+   965→  const text = segs
+   966→    .filter((s) => s.type === "content")
+   967→    .map((s) => (s as { content: string }).content)
+   968→    .join(" ")
+   969→    .trim();
+   970→  if (!text) return;
+   971→  const title = text.slice(0, 40) + (text.length > 40 ? "…" : "");
+   972→  await db.chat.update({ where: { id: chatId }, data: { title } });
+   973→}
+   974→

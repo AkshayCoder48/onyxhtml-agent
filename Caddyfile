@@ -9,6 +9,22 @@
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Real-IP {remote_host}
+
+			# SSE / streaming support — CRITICAL for the OnyxHTML Agent.
+			# Without flush_interval -1, Caddy buffers the entire SSE response
+			# and flushes it only when the stream ends. That makes the chat UI
+			# appear "stuck on Thinking…" for the whole duration of the agent
+			# run, then dump everything at once (or 502 on long runs).
+			# flush_interval -1 = flush every write immediately.
+			flush_interval -1
+
+			# Long-running agent streams can take minutes (25 rounds × tool
+			# execution). Don't let Caddy kill idle connections.
+			transport http {
+				read_buffer 4096
+				dial_timeout 30s
+				response_header_timeout 0
+			}
 		}
 	}
 
@@ -18,6 +34,14 @@
 			header_up X-Forwarded-For {remote_host}
 			header_up X-Forwarded-Proto {scheme}
 			header_up X-Real-IP {remote_host}
+
+			# SSE / streaming support — see comment above.
+			flush_interval -1
+			transport http {
+				read_buffer 4096
+				dial_timeout 30s
+				response_header_timeout 0
+			}
 		}
 	}
 }

@@ -32,6 +32,7 @@ import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChatMessages } from "./chat-messages";
+import { AgentStatusBar } from "./agent-status-bar";
 import { ChatPromptBox } from "./prompt-box";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import type { BridgeExecute } from "@/hooks/use-preview-bridge";
@@ -171,6 +172,11 @@ export function ChatPanel({
         onDelete={handleDelete}
       />
       <ChatMessages />
+      {isStreaming && (
+        <div className="shrink-0 border-t px-3 py-2">
+          <AgentStatusBar />
+        </div>
+      )}
       <ChatPromptBox
         onSend={(t) => void stream.sendMessage(t)}
         onStop={stream.stop}

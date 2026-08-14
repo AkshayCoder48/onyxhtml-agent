@@ -136,6 +136,52 @@ export type BrowserToolsPendingEvent = {
   callIds: ToolCallId[];
 };
 
+// ---------- Agent status machine (PRD §3, §23) ----------
+//
+// The agent lifecycle states. The UI derives its status display from these
+// events rather than a generic `isLoading` boolean, so the user always sees
+// meaningful progress ("Inspecting workspace…", "Editing index.html…",
+// "Running browser test…") instead of an indefinite "Thinking…".
+
+export type AgentStatus =
+  | "idle"
+  | "planning"
+  | "inspecting"
+  | "executing"
+  | "testing"
+  | "verifying"
+  | "summarizing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentStatusEvent = {
+  type: "agent.status";
+  messageId: MessageId;
+  status: AgentStatus;
+  message?: string; // human-readable detail, e.g. "Editing src/App.tsx…"
+  currentAction?: string; // short label for the current step
+};
+
+export type AgentProgressEvent = {
+  type: "agent.progress";
+  messageId: MessageId;
+  message?: string;
+  progress?: number; // 0..1, optional
+};
+
+// Heartbeat — emitted periodically by the agent loop to keep the SSE
+// connection alive through proxies (PRD §4). If the UI stops receiving
+// heartbeats for a defined timeout, it can detect a lost connection and
+// show a "reconnecting…" state instead of spinning "Thinking…" forever.
+export type RunHeartbeatEvent = {
+  type: "run.heartbeat";
+  messageId: MessageId;
+  timestamp: number;
+  currentStep?: string;
+  status?: AgentStatus;
+};
+
 // ---------- Union ----------
 
 export type StreamEvent =
@@ -154,7 +200,10 @@ export type StreamEvent =
   | StreamStartEvent
   | StreamCompleteEvent
   | StreamErrorEvent
-  | BrowserToolsPendingEvent;
+  | BrowserToolsPendingEvent
+  | AgentStatusEvent
+  | AgentProgressEvent
+  | RunHeartbeatEvent;
 
 // ---------- Tool card states (PRD §15) ----------
 

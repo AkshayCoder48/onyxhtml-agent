@@ -19,6 +19,7 @@ import { BrowserTestPanel } from "@/components/preview/browser-test-panel";
 import { ChatHistory } from "@/components/chat/chat-history";
 import { ChatSearch } from "@/components/chat/chat-search";
 import { usePreviewBridge } from "@/hooks/use-preview-bridge";
+import { cn } from "@/lib/utils";
 
 // Mobile workspace view: shows one of Code / Preview / AI / Files at a time,
 // with a bottom nav.
@@ -61,17 +62,40 @@ export function MobileWorkspaceView() {
       <WorkspaceHeader />
       {(mobileView === "code" || mobileView === "preview") && <WorkspaceToolbar />}
 
-      <div className="min-h-0 flex-1">
-        {mobileView === "code" && <CodeEditor />}
-        {mobileView === "preview" && <PreviewPane iframeRef={iframeRef} />}
-        {mobileView === "ai" && <ChatPanel bridgeExecute={execute} />}
+      <div className="relative min-h-0 flex-1">
+        {mobileView === "code" && (
+          <div className="absolute inset-0">
+            <CodeEditor />
+          </div>
+        )}
+        {/*
+          Preview pane — ALWAYS MOUNTED so the iframe + bridge script stay
+          alive for browser-tool execution even when the user is on the Code
+          or AI tab. We use opacity-0 + pointer-events-none (NOT display:none)
+          because display:none can prevent the iframe's srcdoc from being
+          parsed and the bridge script from executing in some browsers.
+        */}
+        <div
+          className={cn(
+            "absolute inset-0",
+            mobileView !== "preview" && "opacity-0 pointer-events-none"
+          )}
+          aria-hidden={mobileView !== "preview"}
+        >
+          <PreviewPane iframeRef={iframeRef} />
+        </div>
+        {mobileView === "ai" && (
+          <div className="absolute inset-0">
+            <ChatPanel bridgeExecute={execute} />
+          </div>
+        )}
         {mobileView === "files" && (
-          <>
+          <div className="absolute inset-0">
             {activeSidebarView === "files" && <FileExplorer />}
             {activeSidebarView === "browser" && <BrowserTestPanel />}
             {activeSidebarView === "history" && <ChatHistory />}
             {activeSidebarView === "search" && <ChatSearch />}
-          </>
+          </div>
         )}
       </div>
 

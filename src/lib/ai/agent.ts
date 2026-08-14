@@ -7,7 +7,7 @@ import {
 } from "@/lib/types";
 // New canonical streaming event types (PRD §11). The OLD StreamEvent union
 // from @/lib/types is replaced by this richer, fine-grained set.
-import type { StreamEvent } from "@/lib/streaming/types";
+import type { StreamEvent, AgentStatus } from "@/lib/streaming/types";
 import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
 import {
   ChatMessage,
@@ -163,11 +163,20 @@ function buildSystemPrompt(opts: {
     "REMINDERS (these override any contrary instinct):",
     "- You ALREADY read AGENT.md above. Follow its lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.",
     "- Do NOT generate files when an edit would do. edit_file is the default for existing files.",
-    "- Do NOT skip the TEST phase. After every meaningful change, call terminal_exec or take_screenshot to verify.",
-    "- Do NOT end the turn without a written SUMMARY of what you changed and how you verified it.",
+    "  If the file already exists, you MUST use edit_file (or read_file first then edit_file).",
+    "  create_file is ONLY for files that do not exist yet.",
+    "- Do NOT skip the TEST phase. After every meaningful change, call terminal_exec or take_screenshot",
+    "  to verify. The preview iframe is always loaded — terminal_exec works even when you can't see it.",
+    "- Do NOT end the turn without a written SUMMARY. Your last message must include:",
+    "    Changes: what you changed (file by file)",
+    "    Verification: what you tested and the result",
+    "    Result: whether the task is complete",
     "- The preview is already loaded with index.html. Do NOT call open_page first.",
     "- Keep explanations brief — one or two sentences before each action.",
-    "- Do NOT repeat the same tool call more than twice. If a tool errors, read the message and adjust."
+    "- Do NOT repeat the same tool call more than twice. If a tool errors, read the message and adjust.",
+    "- When a browser tool (terminal_exec, take_screenshot, etc.) returns an error, READ the error",
+    "  message and adjust your approach. Do not just retry the same call.",
+    "- ALWAYS prefer the surgical edit over a full rewrite. The user's existing code has value."
   );
   return parts.join("\n");
 }
@@ -232,6 +241,18 @@ export async function runAgentAsReadableStream(
           // controller might be closed
         }
       };
+      // SSE comment heartbeat. Proxies (nginx, Caddy, Cloudflare) will close
+      // idle connections after a timeout. Sending a comment line (`: keepalive
+      // \n\n`) every few seconds keeps the connection alive AND forces the
+      // proxy to flush its buffer. The client's SSE parser ignores comment
+      // lines, so this doesn't produce spurious events.
+      const sendHeartbeatComment = () => {
+        try {
+          controller.enqueue(
+            new TextEncoder().encode(`: keepalive ${Date.now()}\n\n`)
+          );
+        } catch {}
+      };
       const sendDone = () => {
         try {
           controller.enqueue(DONE_CHUNK);
@@ -241,6 +262,15 @@ export async function runAgentAsReadableStream(
         } catch {}
       };
 
+      // Heartbeat interval — every 5 seconds, send a comment line + a
+      // run.heartbeat event. This serves two purposes:
+      //   1. Keeps the SSE connection alive through proxies (PRD §4).
+      //   2. Lets the client detect lost connections (if no heartbeat arrives
+      //      for 30s, the client knows the run is stuck/disconnected).
+      const heartbeatTimer = setInterval(() => {
+        sendHeartbeatComment();
+      }, 5000);
+
       try {
         await runAgentLoop({ ...options, send, sendDone });
       } catch (e) {
@@ -249,6 +279,8 @@ export async function runAgentAsReadableStream(
           send({ type: "stream.error", messageId: "", content: msg });
         } catch {}
         sendDone();
+      } finally {
+        clearInterval(heartbeatTimer);
       }
     },
   });
@@ -272,6 +304,17 @@ type LoopCtx = {
   send: (obj: StreamEvent | string) => void;
   sendDone: () => void;
 };
+
+// Helper to emit an agent.status event with a human-readable message.
+function emitStatus(
+  ctx: LoopCtx,
+  messageId: string,
+  status: AgentStatus,
+  message?: string,
+  currentAction?: string
+) {
+  ctx.send({ type: "agent.status", messageId, status, message, currentAction });
+}
 
 async function runAgentLoop(ctx: LoopCtx) {
   // 1. Load workspace + files
@@ -475,6 +518,23 @@ async function runAgentLoop(ctx: LoopCtx) {
   // knows the stream is live (PRD §11 StreamCompleteEvent / lifecycle).
   ctx.send({ type: "stream.start", messageId });
 
+  // Emit the initial agent status. The first thing the agent does is inspect
+  // the workspace (PROBE phase) and plan its approach.
+  emitStatus(ctx, messageId, "inspecting", "Reading AGENT.md & inspecting workspace…", "Inspecting");
+
+  // Heartbeat interval — emit a run.heartbeat data event every 10 seconds so
+  // the client can detect lost connections (PRD §4). The SSE comment heartbeats
+  // from runAgentAsReadableStream keep the TCP connection alive through proxies,
+  // but this data event lets the client's watchdog know the run is still active.
+  const heartbeatInterval = setInterval(() => {
+    ctx.send({
+      type: "run.heartbeat",
+      messageId,
+      timestamp: Date.now(),
+      status: "executing",
+    });
+  }, 10000);
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let reasoningText = "";
     let contentText = "";
@@ -580,6 +640,7 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: assistantRow.id },
         data: { segments: stringifyJSON(segments) },
       });
+      emitStatus(ctx, messageId, "failed", errorMsg || "An error occurred during the agent run.", "Failed");
       ctx.send({ type: "stream.error", messageId, content: errorMsg });
       ctx.sendDone();
       return;
@@ -603,7 +664,10 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: ctx.chatId },
         data: { updatedAt: new Date() },
       });
+      // No more tool calls → the agent is writing its final summary.
+      emitStatus(ctx, messageId, "summarizing", "Preparing summary…", "Summarizing");
       ctx.send({ type: "stream.complete", messageId });
+      emitStatus(ctx, messageId, "completed", "Done", "Completed");
       ctx.sendDone();
       return;
     }
@@ -656,6 +720,7 @@ async function runAgentLoop(ctx: LoopCtx) {
         where: { id: ctx.chatId },
         data: { updatedAt: new Date() },
       });
+      emitStatus(ctx, messageId, "completed", "Done", "Completed");
       ctx.send({ type: "stream.complete", messageId });
       ctx.sendDone();
       return;
@@ -685,6 +750,14 @@ async function runAgentLoop(ctx: LoopCtx) {
       }
       const detail = getToolDetail(tc.name, args);
       const isBrowser = isBrowserTool(tc.name);
+
+      // Emit agent.status so the UI shows what the agent is doing right now
+      // (PRD §23). File tools → "executing", browser tools → "testing".
+      if (isBrowser) {
+        emitStatus(ctx, messageId, "testing", detail || `Running ${label}…`, label);
+      } else {
+        emitStatus(ctx, messageId, "executing", detail || `Running ${label}…`, label);
+      }
 
       // Emit tool.execute to transition the card from "generating" →
       // "executing" (PRD §15). For browser tools this is the signal that
@@ -827,8 +900,11 @@ async function runAgentLoop(ctx: LoopCtx) {
       data: { segments: stringifyJSON(segments) },
     });
 
-    // If there are pending browser tools → pause and resume
+    // If there are pending browser tools → pause and resume. The client will
+    // execute the browser tools and call /continue, which starts a NEW stream.
+    // We emit a heartbeat-status so the UI shows "Testing…" while waiting.
     if (browserCallIds.length > 0) {
+      emitStatus(ctx, messageId, "testing", "Running browser tools in preview…", "Testing");
       ctx.send({
         type: "browser.tools_pending",
         messageId,
@@ -858,8 +934,10 @@ async function runAgentLoop(ctx: LoopCtx) {
     delta:
       "\n\n_I've reached the maximum number of reasoning rounds for this turn. If you'd like me to continue, please send another message._\n",
   });
+  emitStatus(ctx, messageId, "completed", "Done", "Completed");
   ctx.send({ type: "stream.complete", messageId });
   ctx.sendDone();
+  clearInterval(heartbeatInterval);
 }
 
 // ---------- File streaming helpers ----------

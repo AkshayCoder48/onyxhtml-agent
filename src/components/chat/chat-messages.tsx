@@ -9,6 +9,7 @@ import type { Message, MessageSegment } from "@/lib/types";
 import { ThinkingPanel } from "./thinking-panel";
 import { ToolCard } from "./tool-card";
 import { MarkdownContent, ErrorCard } from "./markdown";
+import { AgentStatusInline } from "./agent-status-bar";
 import { Button } from "@/components/ui/button";
 
 // Dispatch a global event so chat-panel.tsx (or any other consumer) can wire
@@ -260,10 +261,7 @@ const MessageItem = React.memo(function MessageItem({
         return null;
       })}
       {message.segments.length === 0 && streaming && (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="size-1.5 animate-pulse-soft rounded-full bg-accent-strong" />
-          Thinking…
-        </div>
+        <AgentStatusInline />
       )}
     </div>
   );

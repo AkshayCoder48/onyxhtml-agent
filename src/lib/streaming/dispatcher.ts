@@ -38,6 +38,9 @@ export type DispatcherHandlers = {
   onStreamComplete: (messageId: string) => void;
   onStreamError: (messageId: string, content: string) => void;
   onBrowserToolsPending: (messageId: string, callIds: string[]) => void;
+  onAgentStatus: (ev: Extract<StreamEvent, { type: "agent.status" }>) => void;
+  onAgentProgress: (ev: Extract<StreamEvent, { type: "agent.progress" }>) => void;
+  onRunHeartbeat: (ev: Extract<StreamEvent, { type: "run.heartbeat" }>) => void;
 };
 
 export class EventDispatcher {
@@ -92,6 +95,15 @@ export class EventDispatcher {
         break;
       case "browser.tools_pending":
         this.handlers.onBrowserToolsPending(ev.messageId, ev.callIds);
+        break;
+      case "agent.status":
+        this.handlers.onAgentStatus(ev);
+        break;
+      case "agent.progress":
+        this.handlers.onAgentProgress(ev);
+        break;
+      case "run.heartbeat":
+        this.handlers.onRunHeartbeat(ev);
         break;
     }
   }

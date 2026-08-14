@@ -64,6 +64,9 @@ export function useChatStream(bridge: Bridge | null) {
   const upsertToolCallSegment = useChatStore((s) => s.upsertToolCallSegment);
   const setToolResult = useChatStore((s) => s.setToolResult);
   const setPendingBrowserTools = useChatStore((s) => s.setPendingBrowserTools);
+  const setAgentStatus = useChatStore((s) => s.setAgentStatus);
+  const setAgentProgress = useChatStore((s) => s.setAgentProgress);
+  const setHeartbeat = useChatStore((s) => s.setHeartbeat);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const setChatId = useChatStore((s) => s.setChatId);
   const setMessages = useChatStore((s) => s.setMessages);
@@ -271,6 +274,15 @@ export function useChatStream(bridge: Bridge | null) {
       onBrowserToolsPending: (_messageId, callIds) => {
         setPendingBrowserTools(callIds);
       },
+      onAgentStatus: (ev) => {
+        setAgentStatus(ev.status, ev.message, ev.currentAction);
+      },
+      onAgentProgress: (ev) => {
+        setAgentProgress(ev.message, ev.progress);
+      },
+      onRunHeartbeat: (ev) => {
+        setHeartbeat(ev.timestamp, ev.currentStep);
+      },
     }),
     [
       appendTextDelta,
@@ -290,6 +302,9 @@ export function useChatStream(bridge: Bridge | null) {
       setToolResult,
       addErrorSegment,
       setPendingBrowserTools,
+      setAgentStatus,
+      setAgentProgress,
+      setHeartbeat,
       addFile,
       updateFileContent,
       setAiEditing,

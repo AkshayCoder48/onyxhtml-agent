@@ -25,6 +25,7 @@ import { ChatHistory } from "@/components/chat/chat-history";
 import { ChatSearch } from "@/components/chat/chat-search";
 import { usePreviewBridge, type BridgeExecute } from "@/hooks/use-preview-bridge";
 import { useSettings } from "@/hooks/use-settings";
+import { cn } from "@/lib/utils";
 
 export function WorkspaceView() {
   const activeSidebarView = useUIStore((s) => s.activeSidebarView);
@@ -87,20 +88,41 @@ export function WorkspaceView() {
         <div className="flex h-full flex-col">
           <WorkspaceHeader />
           <WorkspaceToolbar />
-          <div className="min-h-0 flex-1">
-            {showLeftPanel ? (
-              <ResizablePanelGroup direction="horizontal">
-                <ResizablePanel defaultSize={22} minSize={12} maxSize={40}>
-                  {leftPanelContent}
-                </ResizablePanel>
-                <ResizableHandle />
-                <ResizablePanel defaultSize={78} minSize={30}>
-                  <CodeEditor />
-                </ResizablePanel>
-              </ResizablePanelGroup>
-            ) : (
-              <PreviewPane iframeRef={iframeRef} />
+          <div className="relative min-h-0 flex-1">
+            {/* Code editor + file explorer — visible only in code mode */}
+            {showLeftPanel && (
+              <div className="absolute inset-0">
+                <ResizablePanelGroup direction="horizontal">
+                  <ResizablePanel defaultSize={22} minSize={12} maxSize={40}>
+                    {leftPanelContent}
+                  </ResizablePanel>
+                  <ResizableHandle />
+                  <ResizablePanel defaultSize={78} minSize={30}>
+                    <CodeEditor />
+                  </ResizablePanel>
+                </ResizablePanelGroup>
+              </div>
             )}
+            {/*
+              Preview pane — ALWAYS MOUNTED so the iframe + bridge script stay
+              alive for browser-tool execution (terminal_exec, take_screenshot,
+              click, etc.) even when the user is in code mode. Without this,
+              every browser tools errors with "Preview iframe not available"
+              whenever the user hasn't manually switched to the Preview tab.
+              We use opacity-0 + pointer-events-none (NOT display:none) because
+              display:none can prevent the iframe's srcdoc from being parsed
+              and the bridge script from executing in some browsers. opacity-0
+              keeps the iframe fully rendered and functional — just invisible.
+            */}
+            <div
+              className={cn(
+                "absolute inset-0",
+                showLeftPanel && "opacity-0 pointer-events-none"
+              )}
+              aria-hidden={showLeftPanel}
+            >
+              <PreviewPane iframeRef={iframeRef} />
+            </div>
           </div>
           {consoleOpen && (
             <div className="h-56 shrink-0">

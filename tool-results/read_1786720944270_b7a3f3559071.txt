@@ -1,0 +1,754 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import * as React from "react";
+     4→     4→import { toast } from "sonner";
+     5→     5→import { api } from "@/lib/api";
+     6→     6→import { useChatStore } from "@/stores/chat-store";
+     7→     7→import { useToolStore } from "@/stores/tool-store";
+     8→     8→import { useFileStreamStore } from "@/stores/file-stream-store";
+     9→     9→import { useBrowserStore } from "@/stores/browser-store";
+    10→    10→import { useWorkspaceStore } from "@/stores/workspace-store";
+    11→    11→import type { Message, MessageSegment } from "@/lib/types";
+    12→    12→import type { StreamEvent } from "@/lib/streaming/types";
+    13→    13→import { consumeReadableStream } from "@/lib/streaming/engine";
+    14→    14→import { EventDispatcher, type DispatcherHandlers } from "@/lib/streaming/dispatcher";
+    15→    15→
+    16→    16→function uid(prefix = "m") {
+    17→    17→  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+    18→    18→}
+    19→    19→
+    20→    20→// Browser tools that must be executed against the preview iframe on the client.
+    21→    21→const BROWSER_TOOLS = new Set([
+    22→    22→  "click",
+    23→    23→  "type",
+    24→    24→  "press_key",
+    25→    25→  "scroll",
+    26→    26→  "hover",
+    27→    27→  "select",
+    28→    28→  "get_dom",
+    29→    29→  "get_element",
+    30→    30→  "inspect_element",
+    31→    31→  "get_console_logs",
+    32→    32→  "get_page_errors",
+    33→    33→  "get_network_errors",
+    34→    34→  "take_screenshot",
+    35→    35→  "run_javascript",
+    36→    36→  "run_test",
+    37→    37→  "terminal_exec",
+    38→    38→  "terminal_reset",
+    39→    39→  "check_links",
+    40→    40→  "check_page",
+    41→    41→  "check_console",
+    42→    42→  "open_page",
+    43→    43→  "reload_page",
+    44→    44→  "wait",
+    45→    45→]);
+    46→    46→
+    47→    47→type Bridge = {
+    48→    48→  execute: (
+    49→    49→    tool: string,
+    50→    50→    args: Record<string, unknown>,
+    51→    51→    callId: string
+    52→    52→  ) => Promise<{ result?: unknown; error?: string }>;
+    53→    53→};
+    54→    54→
+    55→    55→export function useChatStream(bridge: Bridge | null) {
+    56→    56→  // Use stable selectors so the hook doesn't re-subscribe on every render.
+    57→    57→  const chatId = useChatStore((s) => s.chatId);
+    58→    58→  const appendMessage = useChatStore((s) => s.appendMessage);
+    59→    59→  const startStreaming = useChatStore((s) => s.startStreaming);
+    60→    60→  const stopStreaming = useChatStore((s) => s.stopStreaming);
+    61→    61→  const appendTextDelta = useChatStore((s) => s.appendTextDelta);
+    62→    62→  const appendThinkingDelta = useChatStore((s) => s.appendThinkingDelta);
+    63→    63→  const addErrorSegment = useChatStore((s) => s.addErrorSegment);
+    64→    64→  const upsertToolCallSegment = useChatStore((s) => s.upsertToolCallSegment);
+    65→    65→  const setToolResult = useChatStore((s) => s.setToolResult);
+    66→    66→  const setPendingBrowserTools = useChatStore((s) => s.setPendingBrowserTools);
+    67→    67→  const isStreaming = useChatStore((s) => s.isStreaming);
+    68→    68→  const setChatId = useChatStore((s) => s.setChatId);
+    69→    69→  const setMessages = useChatStore((s) => s.setMessages);
+    70→    70→  const streamingMessageId = useChatStore((s) => s.streamingMessageId);
+    71→    71→
+    72→    72→  // Tool / file / browser store actions (stable references)
+    73→    73→  const toolStart = useToolStore((s) => s.start);
+    74→    74→  const toolAppendArgs = useToolStore((s) => s.appendArguments);
+    75→    75→  const toolExecute = useToolStore((s) => s.execute);
+    76→    76→  const toolProgress = useToolStore((s) => s.progress);
+    77→    77→  const toolResult = useToolStore((s) => s.result);
+    78→    78→  const toolComplete = useToolStore((s) => s.complete);
+    79→    79→  const toolAddConsole = useToolStore((s) => s.addConsoleLine);
+    80→    80→  const toolReset = useToolStore((s) => s.reset);
+    81→    81→  const fileStreamStart = useFileStreamStore((s) => s.start);
+    82→    82→  const fileStreamDelta = useFileStreamStore((s) => s.delta);
+    83→    83→  const fileStreamComplete = useFileStreamStore((s) => s.complete);
+    84→    84→  const fileStreamReset = useFileStreamStore((s) => s.reset);
+    85→    85→  const browserAdd = useBrowserStore((s) => s.add);
+    86→    86→  const browserReset = useBrowserStore((s) => s.reset);
+    87→    87→
+    88→    88→  // Live file-stream → workspace-store bridge. When file.delta events arrive,
+    89→    89→  // we also push the accumulated content into the workspace store so the
+    90→    90→  // CodeMirror editor shows the file being written in real time (PRD §20, §21,
+    91→    91→  // §40). The editor subscribes to workspaceStore.files[path] and updates
+    92→    92→  // incrementally without flickering (PRD §23).
+    93→    93→  const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
+    94→    94→  const addFile = useWorkspaceStore((s) => s.addFile);
+    95→    95→  const setAiEditing = useWorkspaceStore((s) => s.setAiEditing);
+    96→    96→  const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
+    97→    97→
+    98→    98→  const renameMessage = useChatStore((s) => s.renameMessage);
+    99→    99→
+   100→   100→  const abortRef = React.useRef<AbortController | null>(null);
+   101→   101→  const bridgeRef = React.useRef(bridge);
+   102→   102→  React.useEffect(() => {
+   103→   103→    bridgeRef.current = bridge;
+   104→   104→  }, [bridge]);
+   105→   105→
+   106→   106→  // ---------- EventDispatcher handlers ----------
+   107→   107→  //
+   108→   108→  // These are the bridge between the parsed StreamEvents and the stores.
+   109→   109→  // Every handler runs IMMEDIATELY when an event arrives — no batching,
+   110→   110→  // no throttle (PRD §8). React 18's automatic batching keeps re-renders
+   111→   111→  // bounded to one per frame even under high event rates.
+   112→   112→  //
+   113→   113→  // The handlers are memoized on the stable store actions so the dispatcher
+   114→   114→  // reference is stable across renders (preventing use-chat-stream from
+   115→   115→  // re-subscribing its consumers on every render).
+   116→   116→
+   117→   117→  const handlers = React.useMemo<DispatcherHandlers>(
+   118→   118→    () => ({
+   119→   119→      onTextDelta: (messageId, delta) => {
+   120→   120→        appendTextDelta(messageId, delta);
+   121→   121→      },
+   122→   122→      onThinkingDelta: (messageId, delta) => {
+   123→   123→        appendThinkingDelta(messageId, delta);
+   124→   124→      },
+   125→   125→      onToolStart: (ev) => {
+   126→   126→        toolStart({
+   127→   127→          toolCallId: ev.toolCallId,
+   128→   128→          messageId: ev.messageId,
+   129→   129→          tool: ev.tool,
+   130→   130→          label: ev.label,
+   131→   131→        });
+   132→   132→        // Also create a lightweight tool_call segment in the chat store so
+   133→   133→        // the message renders a ToolCard placeholder immediately and so the
+   134→   134→        // persisted message has the segment for hydration after refresh.
+   135→   135→        upsertToolCallSegment(ev.messageId, {
+   136→   136→          type: "tool_call",
+   137→   137→          tool: ev.tool,
+   138→   138→          arguments: {},
+   139→   139→          argumentsText: "",
+   140→   140→          callId: ev.toolCallId,
+   141→   141→          status: "running",
+   142→   142→          label: ev.label,
+   143→   143→        });
+   144→   144→      },
+   145→   145→      onToolArgumentsDelta: (ev) => {
+   146→   146→        // Append the DELTA to the ToolStore's rawArguments (the source of
+   147→   147→        // truth for live display). Also mirror the accumulated text into the
+   148→   148→        // chat-store segment so persisted messages render correctly.
+   149→   149→        toolAppendArgs(ev.toolCallId, ev.delta);
+   150→   150→        // Best-effort: update the chat-store segment's argumentsText so the
+   151→   151→        // ToolCard (which may read from the message segment for legacy
+   152→   152→        // reasons) sees the streaming text. We read the latest from ToolStore.
+   153→   153→        const t = useToolStore.getState().tools[ev.toolCallId];
+   154→   154→        if (t) {
+   155→   155→          upsertToolCallSegment(ev.messageId, {
+   156→   156→            type: "tool_call",
+   157→   157→            tool: t.tool,
+   158→   158→            arguments: t.parsedArguments ?? {},
+   159→   159→            argumentsText: t.rawArguments,
+   160→   160→            callId: ev.toolCallId,
+   161→   161→            status: "running",
+   162→   162→            label: t.label,
+   163→   163→          });
+   164→   164→        }
+   165→   165→      },
+   166→   166→      onToolExecute: (toolCallId) => {
+   167→   167→        toolExecute(toolCallId);
+   168→   168→        // Mark the chat-store segment as still running (the card transitions
+   169→   169→        // from "generating" to "executing" via the ToolStore state).
+   170→   170→        const t = useToolStore.getState().tools[toolCallId];
+   171→   171→        if (t) {
+   172→   172→          upsertToolCallSegment(t.messageId, {
+   173→   173→            type: "tool_call",
+   174→   174→            tool: t.tool,
+   175→   175→            arguments: t.parsedArguments ?? {},
+   176→   176→            argumentsText: t.rawArguments,
+   177→   177→            callId: toolCallId,
+   178→   178→            status: "running",
+   179→   179→            label: t.label,
+   180→   180→          });
+   181→   181→        }
+   182→   182→      },
+   183→   183→      onToolProgress: (toolCallId, message, progress) => {
+   184→   184→        toolProgress(toolCallId, message, progress);
+   185→   185→      },
+   186→   186→      onToolResult: (ev) => {
+   187→   187→        toolResult(
+   188→   188→          ev.toolCallId,
+   189→   189→          ev.status,
+   190→   190→          ev.result,
+   191→   191→          ev.error,
+   192→   192→          ev.label,
+   193→   193→          ev.detail
+   194→   194→        );
+   195→   195→        setToolResult(ev.messageId, ev.toolCallId, {
+   196→   196→          status: ev.status,
+   197→   197→          result: ev.result,
+   198→   198→          error: ev.error,
+   199→   199→          label: ev.label,
+   200→   200→          detail: ev.detail,
+   201→   201→        });
+   202→   202→      },
+   203→   203→      onToolComplete: (toolCallId) => {
+   204→   204→        toolComplete(toolCallId);
+   205→   205→      },
+   206→   206→      onFileStart: (ev) => {
+   207→   207→        fileStreamStart({
+   208→   208→          path: ev.path,
+   209→   209→          operation: ev.operation,
+   210→   210→          toolCallId: ev.toolCallId,
+   211→   211→        });
+   212→   212→        // Mark the file as AI-editing so the editor becomes read-only and
+   213→   213→        // autosave is suppressed during streaming (prevents the autosave
+   214→   214→        // timer from firing mid-stream and fighting with the live updates).
+   215→   215→        setAiEditing(ev.path, true);
+   216→   216→        // Ensure the file exists in the workspace store with empty content
+   217→   217→        // so the editor can open it and begin receiving deltas.
+   218→   218→        const ws = useWorkspaceStore.getState();
+   219→   219→        if (!ws.files[ev.path]) {
+   220→   220→          addFile(ev.path, "", false);
+   221→   221→        } else {
+   222→   222→          updateFileContent(ev.path, "");
+   223→   223→        }
+   224→   224→        // Auto-open the file being written so the user sees it live (PRD §21).
+   225→   225→        ws.openTab(ev.path);
+   226→   226→        ws.setActiveFile(ev.path);
+   227→   227→      },
+   228→   228→      onFileDelta: (ev) => {
+   229→   229→        fileStreamDelta(ev.path, ev.delta);
+   230→   230→        // Append the delta to the workspace store's file content so the
+   231→   231→        // CodeMirror editor re-renders with the new text. We read the
+   232→   232→        // accumulated content from the FileStreamStore (source of truth).
+   233→   233→        const fs = useFileStreamStore.getState().streams[ev.path];
+   234→   234→        if (fs) {
+   235→   235→          updateFileContent(ev.path, fs.content);
+   236→   236→        }
+   237→   237→      },
+   238→   238→      onFileComplete: (ev) => {
+   239→   239→        fileStreamComplete(ev.path, ev.bytes);
+   240→   240→        // Final sync to workspace store.
+   241→   241→        const fs = useFileStreamStore.getState().streams[ev.path];
+   242→   242→        if (fs) {
+   243→   243→          updateFileContent(ev.path, fs.content);
+   244→   244→        }
+   245→   245→        // Release the AI-editing lock so the user can edit again, and bump
+   246→   246→        // the preview so the live website refreshes with the final content
+   247→   247→        // (PRD §24 — preview scheduler coalesces reloads, never the file
+   248→   248→        // stream itself).
+   249→   249→        setAiEditing(ev.path, false);
+   250→   250→        bumpPreview();
+   251→   251→      },
+   252→   252→      onBrowserConsole: (ev) => {
+   253→   253→        browserAdd({
+   254→   254→          toolCallId: ev.toolCallId,
+   255→   255→          level: ev.level,
+   256→   256→          args: ev.args,
+   257→   257→          time: ev.time,
+   258→   258→        });
+   259→   259→        toolAddConsole(ev.toolCallId, ev.level, ev.args, ev.time);
+   260→   260→      },
+   261→   261→      onStreamStart: (_messageId) => {
+   262→   262→        // The streaming message was already created in sendMessage. Nothing
+   263→   263→        // to do here except optionally reset per-stream bookkeeping.
+   264→   264→      },
+   265→   265→      onStreamComplete: (_messageId) => {
+   266→   266→        // The finally block in sendMessage will call stopStreaming().
+   267→   267→      },
+   268→   268→      onStreamError: (messageId, content) => {
+   269→   269→        if (messageId) addErrorSegment(messageId, content);
+   270→   270→      },
+   271→   271→      onBrowserToolsPending: (_messageId, callIds) => {
+   272→   272→        setPendingBrowserTools(callIds);
+   273→   273→      },
+   274→   274→    }),
+   275→   275→    [
+   276→   276→      appendTextDelta,
+   277→   277→      appendThinkingDelta,
+   278→   278→      toolStart,
+   279→   279→      toolAppendArgs,
+   280→   280→      toolExecute,
+   281→   281→      toolProgress,
+   282→   282→      toolResult,
+   283→   283→      toolComplete,
+   284→   284→      toolAddConsole,
+   285→   285→      fileStreamStart,
+   286→   286→      fileStreamDelta,
+   287→   287→      fileStreamComplete,
+   288→   288→      browserAdd,
+   289→   289→      upsertToolCallSegment,
+   290→   290→      setToolResult,
+   291→   291→      addErrorSegment,
+   292→   292→      setPendingBrowserTools,
+   293→   293→      addFile,
+   294→   294→      updateFileContent,
+   295→   295→      setAiEditing,
+   296→   296→      bumpPreview,
+   297→   297→    ]
+   298→   298→  );
+   299→   299→
+   300→   300→  const dispatcherRef = React.useRef(new EventDispatcher(handlers));
+   301→   301→  React.useEffect(() => {
+   302→   302→    // Update the dispatcher's handlers when the memoized handlers change
+   303→   303→    // (they're stable across renders due to the dependency array above, but
+   304→   304→    // we keep this effect to be safe).
+   305→   305→    dispatcherRef.current = new EventDispatcher(handlers);
+   306→   306→  }, [handlers]);
+   307→   307→
+   308→   308→  // ---------- Stream consumer ----------
+   309→   309→  //
+   310→   310→  // Consumes a raw ReadableStream via the StreamEngine, dispatches each parsed
+   311→   311→  // StreamEvent to the stores IMMEDIATELY, and collects any browser tool
+   312→   312→  // callIds that need client-side execution. Returns the list of pending
+   313→   313→  // browser tool callIds when the stream ends.
+   314→   314→  const consumeStream = React.useCallback(
+   315→   315→    async (
+   316→   316→      stream: ReadableStream<Uint8Array>,
+   317→   317→      assistantId: string,
+   318→   318→      signal: AbortSignal
+   319→   319→    ): Promise<{ browserPending: string[] }> => {
+   320→   320→      const browserPending: string[] = [];
+   321→   321→      const dispatcher = dispatcherRef.current;
+   322→   322→
+   323→   323→      // Watchdog: if no event arrives for 5 minutes, abort so the spinner
+   324→   324→      // can't spin forever (PRD §33 interrupted streams). We use the outer
+   325→   325→      // abortRef (set by sendMessage) to cancel the in-flight fetch.
+   326→   326→      let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+   327→   327→      let timedOut = false;
+   328→   328→      const WATCHDOG_MS = 5 * 60 * 1000;
+   329→   329→      const resetWatchdog = () => {
+   330→   330→        if (watchdogTimer) clearTimeout(watchdogTimer);
+   331→   331→        watchdogTimer = setTimeout(() => {
+   332→   332→          timedOut = true;
+   333→   333→          addErrorSegment(
+   334→   334→            assistantId,
+   335→   335→            "The AI stream has been silent for 5 minutes and was aborted. Please try again."
+   336→   336→          );
+   337→   337→          toast.error("AI stream timed out", {
+   338→   338→            description: "No events received for 5 minutes.",
+   339→   339→          });
+   340→   340→          try {
+   341→   341→            abortRef.current?.abort();
+   342→   342→          } catch {
+   343→   343→            // noop
+   344→   344→          }
+   345→   345→        }, WATCHDOG_MS);
+   346→   346→      };
+   347→   347→      const clearWatchdog = () => {
+   348→   348→        if (watchdogTimer) {
+   349→   349→          clearTimeout(watchdogTimer);
+   350→   350→          watchdogTimer = null;
+   351→   351→        }
+   352→   352→      };
+   353→   353→      resetWatchdog();
+   354→   354→
+   355→   355→      // CRITICAL: The client creates the assistant message with a local ID
+   356→   356→      // (e.g. "a_abc123"), but the server sends stream events with the DB
+   357→   357→      // message's ID (e.g. "cmss..."). If we don't reconcile these IDs,
+   358→   358→      // every appendTextDelta / upsertToolCallSegment call will fail to find
+   359→   359→      // the message and silently drop the update — causing the "stuck on
+   360→   360→      // thinking" UI bug where the AI's response never appears during
+   361→   361→      // streaming (only after a page reload fetches the persisted message).
+   362→   362→      //
+   363→   363→      // Fix: on the FIRST event that carries a server messageId different
+   364→   364→      // from our local assistantId, rename the message in the store. After
+   365→   365→      // that, all subsequent events (text.delta, tool.start, etc.) will
+   366→   366→      // find the message by its new (server) ID.
+   367→   367→      let idReconciled = false;
+   368→   368→      // Track the CURRENT message id (starts as the client-generated id,
+   369→   369→      // becomes the server's id after reconciliation).
+   370→   370→      let currentMessageId = assistantId;
+   371→   371→
+   372→   372→      try {
+   373→   373→        for await (const evt of consumeReadableStream(stream, { signal })) {
+   374→   374→          if (signal.aborted || timedOut) break;
+   375→   375→          resetWatchdog();
+   376→   376→
+   377→   377→          // Reconcile the message ID on the first event that has a messageId.
+   378→   378→          if (!idReconciled && evt.messageId && evt.messageId !== assistantId) {
+   379→   379→            renameMessage(assistantId, evt.messageId);
+   380→   380→            currentMessageId = evt.messageId;
+   381→   381→            idReconciled = true;
+   382→   382→          }
+   383→   383→
+   384→   384→          // Track browser tool calls that need client-side execution. We
+   385→   385→          // collect them from tool.start events (so we know the tool name)
+   386→   386→          // AND from the explicit browser.tools_pending event (which is the
+   387→   387→          // server's authoritative "these need execution now" signal).
+   388→   388→          if (evt.type === "browser.tools_pending") {
+   389→   389→            for (const id of evt.callIds) {
+   390→   390→              if (!browserPending.includes(id)) browserPending.push(id);
+   391→   391→            }
+   392→   392→          }
+   393→   393→
+   394→   394→          // Route every event to the dispatcher → stores. IMMEDIATE, no batch.
+   395→   395→          dispatcher.dispatch(evt);
+   396→   396→
+   397→   397→          if (evt.type === "stream.complete") break;
+   398→   398→        }
+   399→   399→      } catch (err) {
+   400→   400→        if (signal.aborted) {
+   401→   401→          // User cancelled — preserve partial content (PRD §34).
+   402→   402→        } else {
+   403→   403→          const msg = err instanceof Error ? err.message : "Stream error";
+   404→   404→          addErrorSegment(currentMessageId, msg);
+   405→   405→          toast.error("AI stream error", { description: msg });
+   406→   406→        }
+   407→   407→      } finally {
+   408→   408→        clearWatchdog();
+   409→   409→      }
+   410→   410→
+   411→   411→      return { browserPending };
+   412→   412→    },
+   413→   413→    [addErrorSegment, renameMessage]
+   414→   414→  );
+   415→   415→
+   416→   416→  // ---------- Browser tool execution + /continue loop ----------
+   417→   417→  //
+   418→   418→  // After the primary stream ends, if there are pending browser tools, run
+   419→   419→  // them against the preview iframe and call /continue with the results. The
+   420→   420→  // /continue stream may produce MORE browser tools — we loop until none
+   421→   421→  // remain (PRD §27 event ordering, fix-3 in worklog).
+   422→   422→  const executeBrowserToolsAndContinue = React.useCallback(
+   423→   423→    async (
+   424→   424→      chatIdLocal: string,
+   425→   425→      initialCallIds: string[],
+   426→   426→      assistantId: string,
+   427→   427→      signal: AbortSignal
+   428→   428→    ) => {
+   429→   429→      const b = bridgeRef.current;
+   430→   430→      if (!b) {
+   431→   431→        toast.error("Preview not available", {
+   432→   432→          description: "Open the Preview tab to enable browser automation.",
+   433→   433→        });
+   434→   434→        return;
+   435→   435→      }
+   436→   436→
+   437→   437→      let pendingCallIds = initialCallIds;
+   438→   438→      let iteration = 0;
+   439→   439→      const MAX_CONTINUE_ITERATIONS = 25;
+   440→   440→      while (
+   441→   441→        pendingCallIds.length > 0 &&
+   442→   442→        !signal.aborted &&
+   443→   443→        iteration < MAX_CONTINUE_ITERATIONS
+   444→   444→      ) {
+   445→   445→        iteration++;
+   446→   446→        const results: { callId: string; result?: unknown; error?: string }[] =
+   447→   447→          [];
+   448→   448→        for (const callId of pendingCallIds) {
+   449→   449→          const t = useToolStore.getState().tools[callId];
+   450→   450→          if (!t) {
+   451→   451→            results.push({ callId, error: "Tool call not found" });
+   452→   452→            continue;
+   453→   453→          }
+   454→   454→          try {
+   455→   455→            const r = await b.execute(t.tool, t.parsedArguments ?? {}, callId);
+   456→   456→            toolResult(
+   457→   457→              callId,
+   458→   458→              r.error ? "error" : "success",
+   459→   459→              r.result,
+   460→   460→              r.error,
+   461→   461→              t.label,
+   462→   462→              t.detail
+   463→   463→            );
+   464→   464→            setToolResult(assistantId, callId, {
+   465→   465→              status: r.error ? "error" : "success",
+   466→   466→              result: r.result,
+   467→   467→              error: r.error,
+   468→   468→            });
+   469→   469→            toolComplete(callId);
+   470→   470→            results.push({ callId, result: r.result, error: r.error });
+   471→   471→          } catch (err) {
+   472→   472→            const errMsg =
+   473→   473→              err instanceof Error ? err.message : "Execution failed";
+   474→   474→            toolResult(callId, "error", undefined, errMsg, t.label, t.detail);
+   475→   475→            setToolResult(assistantId, callId, {
+   476→   476→              status: "error",
+   477→   477→              error: errMsg,
+   478→   478→            });
+   479→   479→            toolComplete(callId);
+   480→   480→            results.push({ callId, error: errMsg });
+   481→   481→          }
+   482→   482→        }
+   483→   483→
+   484→   484→        setPendingBrowserTools([]);
+   485→   485→
+   486→   486→        try {
+   487→   487→          const stream = await api.streamContinue(
+   488→   488→            chatIdLocal,
+   489→   489→            { results },
+   490→   490→            signal
+   491→   491→          );
+   492→   492→          const { browserPending } = await consumeStream(
+   493→   493→            stream,
+   494→   494→            assistantId,
+   495→   495→            signal
+   496→   496→          );
+   497→   497→          pendingCallIds = browserPending;
+   498→   498→        } catch (err) {
+   499→   499→          if (signal.aborted) return;
+   500→   500→          const errMsg =
+   501→   501→            err instanceof Error ? err.message : "Continue failed";
+   502→   502→          addErrorSegment(assistantId, errMsg);
+   503→   503→          toast.error("AI continue failed", { description: errMsg });
+   504→   504→          return;
+   505→   505→        }
+   506→   506→      }
+   507→   507→      if (iteration >= MAX_CONTINUE_ITERATIONS && pendingCallIds.length > 0) {
+   508→   508→        addErrorSegment(
+   509→   509→          assistantId,
+   510→   510→          "Reached the maximum number of browser-tool continuation rounds (25). The agent may be stuck in a loop — try rephrasing your request."
+   511→   511→        );
+   512→   512→      }
+   513→   513→    },
+   514→   514→    [consumeStream, toolResult, toolComplete, setToolResult, setPendingBrowserTools, addErrorSegment]
+   515→   515→  );
+   516→   516→
+   517→   517→  // Ref so the retry action can re-invoke sendMessage without a self-reference.
+   518→   518→  const sendMessageRef = React.useRef<(content: string) => Promise<void>>(
+   519→   519→    async () => {}
+   520→   520→  );
+   521→   521→
+   522→   522→  const sendMessage = React.useCallback(
+   523→   523→    async (content: string) => {
+   524→   524→      const localChatId = chatId ?? useChatStore.getState().chatId;
+   525→   525→      if (!localChatId) {
+   526→   526→        toast.error("No chat selected");
+   527→   527→        return;
+   528→   528→      }
+   529→   529→      if (!content.trim()) return;
+   530→   530→
+   531→   531→      // Reset per-stream stores so old tool/file state doesn't leak in.
+   532→   532→      toolReset();
+   533→   533→      fileStreamReset();
+   534→   534→      browserReset();
+   535→   535→
+   536→   536→      const userMsg: Message = {
+   537→   537→        id: uid("u"),
+   538→   538→        chatId: localChatId,
+   539→   539→        role: "user",
+   540→   540→        segments: [{ type: "content", content }],
+   541→   541→        createdAt: new Date().toISOString(),
+   542→   542→      };
+   543→   543→      const assistantId = uid("a");
+   544→   544→      const assistantMsg: Message = {
+   545→   545→        id: assistantId,
+   546→   546→        chatId: localChatId,
+   547→   547→        role: "assistant",
+   548→   548→        segments: [],
+   549→   549→        createdAt: new Date().toISOString(),
+   550→   550→      };
+   551→   551→      appendMessage(userMsg);
+   552→   552→      appendMessage(assistantMsg);
+   553→   553→      startStreaming(assistantId);
+   554→   554→
+   555→   555→      const controller = new AbortController();
+   556→   556→      abortRef.current = controller;
+   557→   557→
+   558→   558→      const activeFile = useWorkspaceStore.getState().activeFile;
+   559→   559→
+   560→   560→      try {
+   561→   561→        const stream = await api.streamMessage(
+   562→   562→          localChatId,
+   563→   563→          { content, context: { activeFile } },
+   564→   564→          controller.signal
+   565→   565→        );
+   566→   566→        const { browserPending } = await consumeStream(
+   567→   567→          stream,
+   568→   568→          assistantId,
+   569→   569→          controller.signal
+   570→   570→        );
+   571→   571→        if (browserPending.length > 0 && !controller.signal.aborted) {
+   572→   572→          await executeBrowserToolsAndContinue(
+   573→   573→            localChatId,
+   574→   574→            browserPending,
+   575→   575→            assistantId,
+   576→   576→            controller.signal
+   577→   577→          );
+   578→   578→        }
+   579→   579→      } catch (err) {
+   580→   580→        if (!controller.signal.aborted) {
+   581→   581→          const msg = err instanceof Error ? err.message : "Send failed";
+   582→   582→          addErrorSegment(assistantId, msg);
+   583→   583→          toast.error("AI request failed", {
+   584→   584→            description: msg,
+   585→   585→            action: {
+   586→   586→              label: "Retry",
+   587→   587→              onClick: () => void sendMessageRef.current(content),
+   588→   588→            },
+   589→   589→          });
+   590→   590→        }
+   591→   591→      } finally {
+   592→   592→        stopStreaming();
+   593→   593→        abortRef.current = null;
+   594→   594→      }
+   595→   595→    },
+   596→   596→    [
+   597→   597→      chatId,
+   598→   598→      appendMessage,
+   599→   599→      startStreaming,
+   600→   600→      stopStreaming,
+   601→   601→      addErrorSegment,
+   602→   602→      consumeStream,
+   603→   603→      executeBrowserToolsAndContinue,
+   604→   604→      toolReset,
+   605→   605→      fileStreamReset,
+   606→   606→      browserReset,
+   607→   607→    ]
+   608→   608→  );
+   609→   609→
+   610→   610→  const stop = React.useCallback(() => {
+   611→   611→    abortRef.current?.abort();
+   612→   612→    stopStreaming();
+   613→   613→  }, [stopStreaming]);
+   614→   614→
+   615→   615→  sendMessageRef.current = sendMessage;
+   616→   616→
+   617→   617→  // Derive the last user message content from the store snapshot. We read
+   618→   618→  // via getState() on each render so we don't subscribe to `messages` (which
+   619→   619→  // would re-render this hook on every delta during streaming).
+   620→   620→  const lastUserMessage = React.useMemo(() => {
+   621→   621→    const msgs = useChatStore.getState().messages;
+   622→   622→    for (let i = msgs.length - 1; i >= 0; i--) {
+   623→   623→      const m = msgs[i];
+   624→   624→      if (m.role === "user") {
+   625→   625→        return m.segments
+   626→   626→          .filter(
+   627→   627→            (s): s is Extract<MessageSegment, { type: "content" }> =>
+   628→   628→              s.type === "content"
+   629→   629→          )
+   630→   630→          .map((s) => s.content)
+   631→   631→          .join("");
+   632→   632→      }
+   633→   633→    }
+   634→   634→    return "";
+   635→   635→  }, [chatId, isStreaming, streamingMessageId]);
+   636→   636→
+   637→   637→  const regenerateRef = React.useRef<() => Promise<void>>(async () => {});
+   638→   638→
+   639→   639→  const regenerate = React.useCallback(async () => {
+   640→   640→    const localChatId = chatId ?? useChatStore.getState().chatId;
+   641→   641→    if (!localChatId) {
+   642→   642→      toast.error("No chat selected");
+   643→   643→      return;
+   644→   644→    }
+   645→   645→
+   646→   646→    if (abortRef.current) {
+   647→   647→      abortRef.current.abort();
+   648→   648→      abortRef.current = null;
+   649→   649→    }
+   650→   650→
+   651→   651→    // Reset per-stream stores.
+   652→   652→    toolReset();
+   653→   653→    fileStreamReset();
+   654→   654→    browserReset();
+   655→   655→
+   656→   656→    const current = useChatStore.getState().messages;
+   657→   657→    let lastUserIdx = -1;
+   658→   658→    for (let i = current.length - 1; i >= 0; i--) {
+   659→   659→      if (current[i].role === "user") {
+   660→   660→        lastUserIdx = i;
+   661→   661→        break;
+   662→   662→      }
+   663→   663→    }
+   664→   664→    if (lastUserIdx < 0) {
+   665→   665→      toast.error("Nothing to regenerate", {
+   666→   666→        description: "Send a message first.",
+   667→   667→      });
+   668→   668→      return;
+   669→   669→    }
+   670→   670→    const trimmed = current.slice(0, lastUserIdx + 1);
+   671→   671→    setMessages(trimmed);
+   672→   672→
+   673→   673→    const assistantId = uid("a");
+   674→   674→    const assistantMsg: Message = {
+   675→   675→      id: assistantId,
+   676→   676→      chatId: localChatId,
+   677→   677→      role: "assistant",
+   678→   678→      segments: [],
+   679→   679→      createdAt: new Date().toISOString(),
+   680→   680→    };
+   681→   681→    appendMessage(assistantMsg);
+   682→   682→    startStreaming(assistantId);
+   683→   683→
+   684→   684→    const controller = new AbortController();
+   685→   685→    abortRef.current = controller;
+   686→   686→
+   687→   687→    try {
+   688→   688→      const stream = await api.streamRegenerate(localChatId, controller.signal);
+   689→   689→      const { browserPending } = await consumeStream(
+   690→   690→        stream,
+   691→   691→        assistantId,
+   692→   692→        controller.signal
+   693→   693→      );
+   694→   694→      if (browserPending.length > 0 && !controller.signal.aborted) {
+   695→   695→        await executeBrowserToolsAndContinue(
+   696→   696→          localChatId,
+   697→   697→          browserPending,
+   698→   698→          assistantId,
+   699→   699→          controller.signal
+   700→   700→        );
+   701→   701→      }
+   702→   702→    } catch (err) {
+   703→   703→      if (!controller.signal.aborted) {
+   704→   704→        const msg = err instanceof Error ? err.message : "Regenerate failed";
+   705→   705→        addErrorSegment(assistantId, msg);
+   706→   706→        toast.error("AI regenerate failed", {
+   707→   707→          description: msg,
+   708→   708→          action: {
+   709→   709→            label: "Retry",
+   710→   710→            onClick: () => void regenerateRef.current(),
+   711→   711→          },
+   712→   712→        });
+   713→   713→      }
+   714→   714→    } finally {
+   715→   715→      stopStreaming();
+   716→   716→      abortRef.current = null;
+   717→   717→    }
+   718→   718→  }, [
+   719→   719→    chatId,
+   720→   720→    appendMessage,
+   721→   721→    startStreaming,
+   722→   722→    stopStreaming,
+   723→   723→    addErrorSegment,
+   724→   724→    consumeStream,
+   725→   725→    executeBrowserToolsAndContinue,
+   726→   726→    setMessages,
+   727→   727→    toolReset,
+   728→   728→    fileStreamReset,
+   729→   729→    browserReset,
+   730→   730→  ]);
+   731→   731→
+   732→   732→  regenerateRef.current = regenerate;
+   733→   733→
+   734→   734→  React.useEffect(() => {
+   735→   735→    function onRegenerate() {
+   736→   736→      void regenerateRef.current();
+   737→   737→    }
+   738→   738→    window.addEventListener("chat:regenerate", onRegenerate);
+   739→   739→    return () => {
+   740→   740→      window.removeEventListener("chat:regenerate", onRegenerate);
+   741→   741→    };
+   742→   742→  }, []);
+   743→   743→
+   744→   744→  return {
+   745→   745→    sendMessage,
+   746→   746→    stop,
+   747→   747→    regenerate,
+   748→   748→    isStreaming,
+   749→   749→    lastUserMessage,
+   750→   750→    setChatId,
+   751→   751→    setMessages,
+   752→   752→  };
+   753→   753→}
+   754→   754→
