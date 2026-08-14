@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  /* config options here */
+  // `output: "standalone"` is for Docker/self-hosting. Vercel doesn't need
+  // it and it breaks Vercel's build (next-server.js.nft.json not found).
   typescript: {
     ignoreBuildErrors: true,
   },
