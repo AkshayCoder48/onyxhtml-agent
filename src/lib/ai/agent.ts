@@ -20,7 +20,7 @@ import {
   isBrowserTool,
 } from "./tools";
 
-const MAX_ROUNDS = 8;
+const MAX_ROUNDS = 25;
 
 // ---------- SSE encoding helpers ----------
 
@@ -119,6 +119,12 @@ function buildSystemPrompt(opts: {
   const parts: string[] = [
     "You are an AI coding agent inside an HTML Workspace Editor. You can read, create, edit, and delete files in the user's workspace, and you can control the live preview (click, type, scroll, run JavaScript, inspect the DOM and console) to test the website. Always explain briefly what you're doing. Use file tools to make changes, then use browser tools to verify. Be concise. The workspace file tree is provided in the context.",
     "",
+    "IMPORTANT NOTES ABOUT THE PREVIEW:",
+    "- The preview iframe ALWAYS shows the workspace entry file (index.html). It is already loaded — you do NOT need to call open_page or reload_page before interacting with the page.",
+    "- The terminal_exec tool is a REPL: it evaluates JavaScript in the preview's global scope and returns the value of the last expression. Use it to inspect the page state (e.g. document.title, document.querySelectorAll('h1').length, etc.).",
+    "- State persists across terminal_exec calls: use term.set('x', value) to save a value and term.get('x') to retrieve it later.",
+    "- The take_screenshot tool returns an SVG snapshot of the current viewport PLUS a text DOM snapshot — use the DOM snapshot for debugging if the screenshot is too large.",
+    "",
     `Workspace: ${opts.workspaceName}`,
     `Entry file: ${opts.entryFile ?? "(none)"}`,
     "",
@@ -142,9 +148,10 @@ function buildSystemPrompt(opts: {
     "Guidelines:",
     "- Use list_files/read_file to understand the project before editing.",
     "- Use edit_file for small, precise changes; use create_file/write_file for new files or full rewrites.",
-    "- After making changes, use check_page / open_page + check_console to verify the page renders correctly.",
+    "- After making changes, use terminal_exec or check_console to verify the page renders correctly. Do NOT call open_page first — the page is already loaded.",
     "- Never include API keys, secrets, or sensitive data in your file edits.",
-    "- Keep explanations brief — one or two sentences before each action."
+    "- Keep explanations brief — one or two sentences before each action.",
+    "- Do NOT repeat the same tool call more than twice. If a tool returns an error, read the error message and adjust your approach instead of retrying."
   );
   return parts.join("\n");
 }
@@ -334,8 +341,45 @@ async function runAgentLoop(ctx: LoopCtx) {
   const convoRows = dbMessages.filter((m) => m.id !== assistantRow.id);
   let conversation = buildConversationFromMessages(systemPrompt, convoRows);
 
-  // 5. If resuming (browser tools), apply results to pending tool_call segments
+  // 5. If resuming (browser tools), apply results to pending tool_call segments.
+  //
+  // CRITICAL: We must reconstruct the assistant message (with its tool_calls)
+  // from the persisted segments and add it to the conversation BEFORE the
+  // tool result messages. Without this, the tool messages are "orphaned" —
+  // they reference tool_call_ids that don't appear in any preceding
+  // assistant message. The provider will reject the conversation or, worse,
+  // the model will be confused and repeat the same tool calls in a loop
+  // (which was the "spinner keeps running" / infinite-loop symptom).
   if (ctx.resumeResults && ctx.resumeResults.length > 0) {
+    // Reconstruct the assistant message from the current segments. This
+    // includes the content text + all tool_call segments (with their
+    // original arguments). We need this so the provider sees the full
+    // assistant turn (text + tool_calls) before the tool results.
+    const assistantContent = segmentsToContentText(segments);
+    const assistantToolCalls: ToolCallRef[] = [];
+    for (const s of segments) {
+      if (s.type === "tool_call") {
+        assistantToolCalls.push({
+          id: s.callId,
+          type: "function",
+          function: {
+            name: s.tool,
+            arguments: stringifyJSON(s.arguments ?? {}),
+          },
+        });
+      }
+    }
+    if (assistantToolCalls.length > 0) {
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: assistantContent || null,
+      };
+      (assistantMsg as { tool_calls?: ToolCallRef[] }).tool_calls = assistantToolCalls;
+      conversation.push(assistantMsg);
+    }
+
+    // Now apply the tool results — each tool message follows the assistant
+    // message that issued the tool_call.
     for (const r of ctx.resumeResults) {
       const segIdx = segments.findIndex(
         (s): s is Extract<MessageSegment, { type: "tool_call" }> =>
@@ -506,8 +550,61 @@ async function runAgentLoop(ctx: LoopCtx) {
       return;
     }
 
+    // Filter out tool calls that were truncated by the model hitting its
+    // token limit. A tool call is "truncated" if:
+    //   - it has no name (only argument fragments arrived), OR
+    //   - the arguments JSON is unparseable AND non-empty (incomplete JSON).
+    // Truncated calls are dropped with a warning so the model can recover on
+    // the next round instead of executing a half-formed tool with empty args.
+    const validToolCalls: ToolCallAccum[] = [];
+    const droppedToolCalls: ToolCallAccum[] = [];
+    for (const tc of toolCalls) {
+      const hasName = Boolean(tc.name);
+      let argsParseable = true;
+      try {
+        if (tc.arguments && tc.arguments.trim()) {
+          JSON.parse(tc.arguments);
+        }
+      } catch {
+        argsParseable = false;
+      }
+      if (hasName && (argsParseable || !tc.arguments || !tc.arguments.trim())) {
+        validToolCalls.push(tc);
+      } else {
+        droppedToolCalls.push(tc);
+      }
+    }
+    if (droppedToolCalls.length > 0) {
+      // Surface the dropped (truncated) tool calls as content so the user can
+      // see what happened, then continue with the valid ones.
+      const note =
+        droppedToolCalls.length === 1
+          ? "⚠️ One tool call was truncated (the model ran out of tokens mid-argument) and has been skipped."
+          : `⚠️ ${droppedToolCalls.length} tool calls were truncated (the model ran out of tokens mid-argument) and have been skipped.`;
+      segments = mergeSegment(segments, { type: "content", content: `\n\n${note}\n` });
+      ctx.send({ type: "content", content: `\n\n${note}\n` });
+    }
+    const toolCallsToProcess = validToolCalls;
+
+    // If all tool calls were truncated, treat this as a final round —
+    // there's nothing to execute and no tool message to send back, so the
+    // model would just loop. Emit done and finish.
+    if (toolCallsToProcess.length === 0) {
+      await db.message.update({
+        where: { id: assistantRow.id },
+        data: { segments: stringifyJSON(segments) },
+      });
+      await db.chat.update({
+        where: { id: ctx.chatId },
+        data: { updatedAt: new Date() },
+      });
+      ctx.send({ type: "done" });
+      ctx.sendDone();
+      return;
+    }
+
     // Build the assistant message with tool_calls to add to the conversation
-    const toolCallRefs: ToolCallRef[] = toolCalls.map((tc) => ({
+    const toolCallRefs: ToolCallRef[] = toolCallsToProcess.map((tc) => ({
       id: tc.callId,
       type: "function",
       function: { name: tc.name, arguments: tc.arguments || "{}" },
@@ -520,7 +617,7 @@ async function runAgentLoop(ctx: LoopCtx) {
 
     // Process each tool call
     const browserCallIds: string[] = [];
-    for (const tc of toolCalls) {
+    for (const tc of toolCallsToProcess) {
       const label = getToolLabel(tc.name);
       let args: Record<string, unknown> = {};
       try {
@@ -666,15 +763,23 @@ async function runAgentLoop(ctx: LoopCtx) {
     // Otherwise loop again (file tools ran; model may produce more)
   }
 
-  // Max rounds exceeded
+  // Max rounds exceeded — emit done (not error) so the spinner stops.
+  // The model has been working for 25 rounds; that's a legitimate stopping
+  // point, not a failure. Persist what we have and finish gracefully.
   await db.message.update({
     where: { id: assistantRow.id },
     data: { segments: stringifyJSON(segments) },
   });
-  ctx.send({
-    type: "error",
-    content: "Agent reached the maximum number of reasoning rounds.",
+  await db.chat.update({
+    where: { id: ctx.chatId },
+    data: { updatedAt: new Date() },
   });
+  ctx.send({
+    type: "content",
+    content:
+      "\n\n_I've reached the maximum number of reasoning rounds for this turn. If you'd like me to continue, please send another message._\n",
+  });
+  ctx.send({ type: "done" });
   ctx.sendDone();
 }
 

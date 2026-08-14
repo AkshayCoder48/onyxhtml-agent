@@ -1,0 +1,823 @@
+     1→"use client";
+     2→
+     3→import * as React from "react";
+     4→import {
+     5→  RefreshCw,
+     6→  ExternalLink,
+     7→  Monitor,
+     8→  Tablet,
+     9→  Smartphone,
+    10→  Globe,
+    11→  ArrowLeft,
+    12→  ArrowRight,
+    13→  MoreVertical,
+    14→  Maximize,
+    15→  Search as SearchIcon,
+    16→  Terminal,
+    17→  SlidersHorizontal,
+    18→} from "lucide-react";
+    19→import { toast } from "sonner";
+    20→import { Button } from "@/components/ui/button";
+    21→import { Input } from "@/components/ui/input";
+    22→import {
+    23→  Tooltip,
+    24→  TooltipContent,
+    25→  TooltipProvider,
+    26→  TooltipTrigger,
+    27→} from "@/components/ui/tooltip";
+    28→import {
+    29→  DropdownMenu,
+    30→  DropdownMenuContent,
+    31→  DropdownMenuItem,
+    32→  DropdownMenuTrigger,
+    33→} from "@/components/ui/dropdown-menu";
+    34→import {
+    35→  Popover,
+    36→  PopoverContent,
+    37→  PopoverTrigger,
+    38→} from "@/components/ui/popover";
+    39→import { useWorkspaceStore } from "@/stores/workspace-store";
+    40→import { useSettings } from "@/hooks/use-settings";
+    41→import { findEntryFile } from "@/lib/files";
+    42→import { DEVICE_SIZES, type PreviewDevice } from "@/lib/types";
+    43→import { cn } from "@/lib/utils";
+    44→
+    45→export type PreviewConsoleMessage = {
+    46→  level: "log" | "warn" | "error" | "info";
+    47→  args: unknown[];
+    48→  time: number;
+    49→};
+    50→
+    51→export type PreviewError = {
+    52→  message: string;
+    53→  filename?: string;
+    54→  line?: number;
+    55→  col?: number;
+    56→  time: number;
+    57→};
+    58→
+    59→export type PreviewNetworkEntry = {
+    60→  url: string;
+    61→  status?: number;
+    62→  type: string;
+    63→  time: number;
+    64→};
+    65→
+    66→// Bridge script injected into the preview iframe. Runs inside the iframe's
+    67→// window context. Captures console/error/network events and forwards them to
+    68→// the parent, and handles browser-tool commands posted from the host.
+    69→//
+    70→// NOTE: This is a template literal in the React component scope, so we must
+    71→// NOT use ${...} here (it would be interpolated by the host). All string
+    72→// building inside the iframe uses string concatenation.
+    73→const BRIDGE_SCRIPT = `
+    74→(function(){
+    75→  "use strict";
+    76→  var send = function(msg){ try { var m = msg || {}; m.source = "preview"; parent.postMessage(m, "*"); } catch(e){} };
+    77→  var logs = [];
+    78→  var errs = [];
+    79→  var networkErrors = [];
+    80→  var wrap = function(level){ return function(){
+    81→    try {
+    82→      var args = Array.prototype.slice.call(arguments);
+    83→      var safe = args.map(function(a){
+    84→        if (a instanceof Error) return a.stack || a.message;
+    85→        if (typeof a === "object") { try { return JSON.stringify(a); } catch(e){ return String(a); } }
+    86→        return String(a);
+    87→      });
+    88→      var entry = { level: level, args: safe, time: Date.now() };
+    89→      logs.push(entry);
+    90→      send(Object.assign({ kind: "console" }, entry));
+    91→    } catch(e){}
+    92→    return origConsole[level].apply(console, arguments);
+    93→  }; };
+    94→  var origConsole = {
+    95→    log: console.log.bind(console),
+    96→    warn: console.warn.bind(console),
+    97→    error: console.error.bind(console),
+    98→    info: console.info.bind(console),
+    99→  };
+   100→  console.log = wrap("log");
+   101→  console.warn = wrap("warn");
+   102→  console.error = wrap("error");
+   103→  console.info = wrap("info");
+   104→
+   105→  window.addEventListener("error", function(e) {
+   106→    var m = { message: e.message || "Error", filename: e.filename, line: e.lineno, col: e.colno, time: Date.now() };
+   107→    errs.push(m);
+   108→    send(Object.assign({ kind: "error" }, m));
+   109→  });
+   110→  window.addEventListener("unhandledrejection", function(e) {
+   111→    var reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+   112→    var m = { message: "Unhandled promise rejection: " + reason, time: Date.now() };
+   113→    errs.push(m);
+   114→    send(Object.assign({ kind: "error" }, m));
+   115→  });
+   116→  // Capture failed resource loads (LINK / SCRIPT / IMG)
+   117→  window.addEventListener("error", function(e) {
+   118→    var tgt = e.target;
+   119→    if (tgt && tgt.tagName && (tgt.tagName === "LINK" || tgt.tagName === "SCRIPT" || tgt.tagName === "IMG")) {
+   120→      var entry = { url: tgt.src || tgt.href, type: tgt.tagName, status: 0, time: Date.now() };
+   121→      networkErrors.push(entry);
+   122→      send(Object.assign({ kind: "network" }, entry));
+   123→    }
+   124→  }, true);
+   125→
+   126→  function styleSummary(el) {
+   127→    try {
+   128→      var cs = window.getComputedStyle(el);
+   129→      return {
+   130→        display: cs.display,
+   131→        visibility: cs.visibility,
+   132→        opacity: cs.opacity,
+   133→        position: cs.position,
+   134→        color: cs.color,
+   135→        backgroundColor: cs.backgroundColor
+   136→      };
+   137→    } catch (e) {
+   138→      return {};
+   139→    }
+   140→  }
+   141→
+   142→  window.addEventListener("message", function(ev) {
+   143→    var data = ev.data;
+   144→    if (!data || data.source !== "workspace-host") return;
+   145→    if (data.action !== "browser-tool") return;
+   146→    var tool = data.tool, args = data.args || {}, callId = data.callId;
+   147→    var result, error;
+   148→    try {
+   149→      var $ = function(sel){ return document.querySelector(sel); };
+   150→      switch (tool) {
+   151→        case "click": {
+   152→          var el = $(args.selector);
+   153→          if (!el) throw new Error("Element not found: " + args.selector);
+   154→          el.click();
+   155→          result = { ok: true };
+   156→          break;
+   157→        }
+   158→        case "type": {
+   159→          var el = $(args.selector);
+   160→          if (!el) throw new Error("Element not found: " + args.selector);
+   161→          el.focus();
+   162→          if (args.clear !== false) el.value = "";
+   163→          el.value = (el.value || "") + String(args.text != null ? args.text : "");
+   164→          el.dispatchEvent(new Event("input", { bubbles: true }));
+   165→          el.dispatchEvent(new Event("change", { bubbles: true }));
+   166→          result = { value: el.value };
+   167→          break;
+   168→        }
+   169→        case "press_key": {
+   170→          var key = String(args.key != null ? args.key : "");
+   171→          var target = args.selector ? $(args.selector) : (document.activeElement || document.body);
+   172→          if (!target) throw new Error("Target not found");
+   173→          target.dispatchEvent(new KeyboardEvent("keydown", { key: key, bubbles: true }));
+   174→          target.dispatchEvent(new KeyboardEvent("keypress", { key: key, bubbles: true }));
+   175→          target.dispatchEvent(new KeyboardEvent("keyup", { key: key, bubbles: true }));
+   176→          result = { ok: true };
+   177→          break;
+   178→        }
+   179→        case "scroll": {
+   180→          if (args.selector) {
+   181→            var el = $(args.selector);
+   182→            if (el) el.scrollIntoView({ behavior: "smooth", block: args.block || "center" });
+   183→          } else {
+   184→            window.scrollBy({ top: Number(args.y != null ? args.y : 0), left: Number(args.x != null ? args.x : 0), behavior: "smooth" });
+   185→          }
+   186→          result = { ok: true, scrollX: window.scrollX, scrollY: window.scrollY };
+   187→          break;
+   188→        }
+   189→        case "hover": {
+   190→          var el = $(args.selector);
+   191→          if (!el) throw new Error("Element not found: " + args.selector);
+   192→          el.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+   193→          el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+   194→          setTimeout(function(){
+   195→            el.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+   196→            el.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+   197→          }, 50);
+   198→          result = { ok: true };
+   199→          break;
+   200→        }
+   201→        case "select": {
+   202→          var el = $(args.selector);
+   203→          if (!el) throw new Error("Element not found: " + args.selector);
+   204→          el.value = String(args.value != null ? args.value : "");
+   205→          el.dispatchEvent(new Event("change", { bubbles: true }));
+   206→          result = { value: el.value };
+   207→          break;
+   208→        }
+   209→        case "get_dom": {
+   210→          var el = args.selector ? $(args.selector) : document.body;
+   211→          if (!el) throw new Error("Element not found: " + args.selector);
+   212→          result = { html: el.outerHTML };
+   213→          break;
+   214→        }
+   215→        case "get_element": {
+   216→          var el = $(args.selector);
+   217→          if (!el) throw new Error("Element not found: " + args.selector);
+   218→          result = { outerHTML: el.outerHTML, tagName: el.tagName, computedStyle: styleSummary(el) };
+   219→          break;
+   220→        }
+   221→        case "inspect_element": {
+   222→          var el = $(args.selector);
+   223→          if (!el) throw new Error("Element not found: " + args.selector);
+   224→          var rect = el.getBoundingClientRect();
+   225→          var attrs = {};
+   226→          for (var i = 0; i < el.attributes.length; i++) {
+   227→            var at = el.attributes[i];
+   228→            attrs[at.name] = at.value;
+   229→          }
+   230→          result = {
+   231→            tag: el.tagName,
+   232→            attributes: attrs,
+   233→            text: (el.textContent || "").trim().slice(0, 500),
+   234→            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left },
+   235→            computedStyle: styleSummary(el)
+   236→          };
+   237→          break;
+   238→        }
+   239→        case "run_javascript": {
+   240→          // eslint-disable-next-line no-eval
+   241→          var r = eval(String(args.code != null ? args.code : ""));
+   242→          var serialized;
+   243→          try {
+   244→            serialized = (typeof r === "object" && r !== null)
+   245→              ? JSON.parse(JSON.stringify(r, function(k, v){ return typeof v === "function" ? "[Function]" : v; }))
+   246→              : r;
+   247→          } catch (e) {
+   248→            serialized = String(r);
+   249→          }
+   250→          result = { value: serialized };
+   251→          break;
+   252→        }
+   253→        case "run_test": {
+   254→          var name = args.name != null ? String(args.name) : undefined;
+   255→          var assertions = Array.isArray(args.assertions) ? args.assertions : [];
+   256→          var results = assertions.map(function(ast){
+   257→            var label = String((ast && ast.label) || "assertion");
+   258→            var code = String((ast && ast.code) || "");
+   259→            var expected = (ast && typeof ast.expected === "string") ? ast.expected : undefined;
+   260→            var actual;
+   261→            try {
+   262→              // eslint-disable-next-line no-eval
+   263→              var r = eval(code);
+   264→              actual = (typeof r === "object" && r !== null) ? JSON.stringify(r) : String(r);
+   265→              var pass = (expected === undefined) ? true : (actual === expected);
+   266→              return { label: label, pass: pass, actual: actual, expected: expected };
+   267→            } catch (e) {
+   268→              return { label: label, pass: false, actual: "Error: " + (e && e.message ? e.message : String(e)), expected: expected };
+   269→            }
+   270→          });
+   271→          var passed = results.filter(function(r){ return r.pass; }).length;
+   272→          result = { name: name, passed: passed, total: results.length, results: results };
+   273→          break;
+   274→        }
+   275→        case "check_links": {
+   276→          var nodes = document.querySelectorAll("a[href]");
+   277→          var links = [];
+   278→          for (var i = 0; i < nodes.length; i++) {
+   279→            var el = nodes[i];
+   280→            var href = el.getAttribute("href") || "";
+   281→            var text = (el.textContent || el.innerText || "").trim().slice(0, 120);
+   282→            var type;
+   283→            if (/^(https?:)?\\/\\//i.test(href)) type = "absolute";
+   284→            else if (/^mailto:/i.test(href)) type = "mailto";
+   285→            else if (/^#/.test(href)) type = "anchor";
+   286→            else type = "relative";
+   287→            links.push({ href: href, text: text, type: type });
+   288→          }
+   289→          result = { links: links, count: links.length };
+   290→          break;
+   291→        }
+   292→        case "get_console_logs": {
+   293→          result = { logs: logs };
+   294→          break;
+   295→        }
+   296→        case "get_page_errors": {
+   297→          result = { errors: errs };
+   298→          break;
+   299→        }
+   300→        case "get_network_errors": {
+   301→          result = { errors: networkErrors };
+   302→          break;
+   303→        }
+   304→        case "take_screenshot": {
+   305→          try {
+   306→            var body = document.body;
+   307→            var de = document.documentElement;
+   308→            var width = Math.max(body ? body.scrollWidth : 0, de ? de.scrollWidth : 0, window.innerWidth);
+   309→            var height = Math.max(body ? body.scrollHeight : 0, de ? de.scrollHeight : 0, window.innerHeight);
+   310→            var clone = document.documentElement.cloneNode(true);
+   311→            // Remove script tags from the clone so they don't re-execute if the
+   312→            // SVG is ever rendered back into a document.
+   313→            var scripts = clone.querySelectorAll("script");
+   314→            for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+   315→            clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+   316→            var svg =
+   317→              '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">' +
+   318→              '<foreignObject width="100%" height="100%">' +
+   319→              clone.outerHTML +
+   320→              '</foreignObject></svg>';
+   321→            var dataUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+   322→            result = { dataUrl: dataUrl, width: width, height: height, ok: true };
+   323→          } catch (err) {
+   324→            result = { ok: false, note: "Screenshot failed: " + (err && err.message ? err.message : String(err)) };
+   325→          }
+   326→          break;
+   327→        }
+   328→        case "wait": {
+   329→          result = { ok: true };
+   330→          break;
+   331→        }
+   332→        default:
+   333→          throw new Error("Unknown browser tool: " + tool);
+   334→      }
+   335→      send({ callId: callId, result: result });
+   336→    } catch (err) {
+   337→      error = err && err.message ? err.message : String(err);
+   338→      send({ callId: callId, error: error });
+   339→    }
+   340→  });
+   341→})();
+   342→`;
+   343→
+   344→export function buildPreviewDoc(
+   345→  files: Record<string, { content: string; isBinary: boolean }>,
+   346→  entry: string
+   347→): string {
+   348→  const html = files[entry]?.content ?? "";
+   349→  if (!html) return "<!doctype html><html><body><p>No HTML to preview.</p></body></html>";
+   350→
+   351→  const inlinable = new Set(Object.keys(files));
+   352→
+   353→  // Inline <link rel="stylesheet" href="local.css">
+   354→  let out = html.replace(
+   355→    /<link\b[^>]*?rel=["']stylesheet["'][^>]*?>/gi,
+   356→    (tag) => {
+   357→      const m = tag.match(/href=["']([^"']+)["']/i);
+   358→      if (!m) return tag;
+   359→      const href = m[1];
+   360→      if (/^https?:\/\//i.test(href) || href.startsWith("//") || href.startsWith("data:"))
+   361→        return tag;
+   362→      const path = href.replace(/^\.?\//, "");
+   363→      if (!inlinable.has(path)) return tag;
+   364→      const css = files[path]?.content ?? "";
+   365→      return `<style data-src="${path}">\n${css}\n</style>`;
+   366→    }
+   367→  );
+   368→
+   369→  // Inline <script src="local.js">
+   370→  out = out.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*?)><\/script>/gi, (tag, pre, src, post) => {
+   371→    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+   372→      return tag;
+   373→    const path = src.replace(/^\.?\//, "");
+   374→    if (!inlinable.has(path)) return tag;
+   375→    const js = files[path]?.content ?? "";
+   376→    const attrs = `${pre}${post}`.replace(/\s+/g, " ").trim();
+   377→    return `<script ${attrs} data-src="${path}">\n${js}\n</script>`;
+   378→  });
+   379→
+   380→  // Inline <img src="local.*"> for SVG / text (best-effort). For binary, we cannot
+   381→  // embed directly without base64 — skip; the broken image will be reported by the bridge.
+   382→  out = out.replace(/<img\b([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (tag, pre, src, post) => {
+   383→    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+   384→      return tag;
+   385→    const path = src.replace(/^\.?\//, "");
+   386→    if (!inlinable.has(path)) return tag;
+   387→    const f = files[path];
+   388→    if (!f || f.isBinary) return tag;
+   389→    // Text content: only SVG can be inlined as a data URL
+   390→    if (path.toLowerCase().endsWith(".svg")) {
+   391→      const data = `data:image/svg+xml;utf8,${encodeURIComponent(f.content)}`;
+   392→      return `<img ${pre} src="${data}" ${post} />`;
+   393→    }
+   394→    return tag;
+   395→  });
+   396→
+   397→  // Inject bridge before </body> (or at the end of the document).
+   398→  if (/<\/body>/i.test(out)) {
+   399→    out = out.replace(/<\/body>/i, `<script>${BRIDGE_SCRIPT}</script></body>`);
+   400→  } else {
+   401→    out = `${out}<script>${BRIDGE_SCRIPT}</script>`;
+   402→  }
+   403→  return out;
+   404→}
+   405→
+   406→type CustomSize = { width: number; height: number };
+   407→
+   408→export function PreviewPane({
+   409→  iframeRef,
+   410→  onOpenConsole,
+   411→}: {
+   412→  iframeRef: React.RefObject<HTMLIFrameElement | null>;
+   413→  onOpenConsole?: () => void;
+   414→}) {
+   415→  const files = useWorkspaceStore((s) => s.files);
+   416→  const device = useWorkspaceStore((s) => s.device);
+   417→  const setDevice = useWorkspaceStore((s) => s.setDevice);
+   418→  const previewNonce = useWorkspaceStore((s) => s.previewNonce);
+   419→  const { settings } = useSettings();
+   420→
+   421→  const paths = React.useMemo(() => Object.keys(files), [files]);
+   422→  const entry = React.useMemo(() => findEntryFile(paths), [paths]);
+   423→  const doc = React.useMemo(
+   424→    () => (entry ? buildPreviewDoc(files, entry) : ""),
+   425→    [files, entry, previewNonce]
+   426→  );
+   427→
+   428→  // Local custom-device state (not in the store — the segmented control still
+   429→  // drives `device`; `useCustom` overrides the size when true).
+   430→  const [useCustom, setUseCustom] = React.useState(false);
+   431→  const [customSize, setCustomSize] = React.useState<CustomSize>({ width: 1024, height: 768 });
+   432→  const [customOpen, setCustomOpen] = React.useState(false);
+   433→
+   434→  const containerRef = React.useRef<HTMLDivElement | null>(null);
+   435→
+   436→  const presetSize = DEVICE_SIZES[device];
+   437→  const activeSize = useCustom ? customSize : presetSize;
+   438→
+   439→  function openInNewTab() {
+   440→    if (!doc) return;
+   441→    const blob = new Blob([doc], { type: "text/html" });
+   442→    const url = URL.createObjectURL(blob);
+   443→    window.open(url, "_blank", "noopener,noreferrer");
+   444→    setTimeout(() => URL.revokeObjectURL(url), 30000);
+   445→  }
+   446→
+   447→  function reload() {
+   448→    useWorkspaceStore.getState().bumpPreview();
+   449→  }
+   450→
+   451→  function handleInspect() {
+   452→    toast.info("Inspect mode — click an element in the preview");
+   453→    // Dispatch an event so other components (or a future inspector) can react.
+   454→    window.dispatchEvent(new CustomEvent("preview:inspect-mode"));
+   455→    // Also notify the iframe in case its bridge wants to enter pick mode.
+   456→    const iframe = iframeRef.current;
+   457→    if (iframe && iframe.contentWindow) {
+   458→      iframe.contentWindow.postMessage(
+   459→        { source: "workspace-host", action: "inspect-mode" },
+   460→        "*"
+   461→      );
+   462→    }
+   463→  }
+   464→
+   465→  function handleFullscreen() {
+   466→    const el = containerRef.current;
+   467→    if (!el) return;
+   468→    if (document.fullscreenElement) {
+   469→      document.exitFullscreen().catch(() => {});
+   470→    } else if (el.requestFullscreen) {
+   471→      el.requestFullscreen().catch(() => {
+   472→        toast.error("Fullscreen not available");
+   473→      });
+   474→    }
+   475→  }
+   476→
+   477→  function handleOpenConsole() {
+   478→    if (onOpenConsole) {
+   479→      onOpenConsole();
+   480→    } else {
+   481→      window.dispatchEvent(new CustomEvent("preview:open-console"));
+   482→    }
+   483→  }
+   484→
+   485→  function applyCustom() {
+   486→    if (!customSize.width || !customSize.height) {
+   487→      toast.error("Enter a valid width and height");
+   488→      return;
+   489→    }
+   490→    setUseCustom(true);
+   491→    setCustomOpen(false);
+   492→  }
+   493→
+   494→  // Render the iframe element (shared across device modes).
+   495→  const renderIframe = (className?: string, style?: React.CSSProperties) => (
+   496→    <iframe
+   497→      ref={iframeRef}
+   498→      title="preview"
+   499→      srcDoc={doc}
+   500→      sandbox="allow-scripts"
+   501→      className={cn("bg-white", className)}
+   502→      style={style}
+   503→    />
+   504→  );
+   505→
+   506→  return (
+   507→    <div ref={containerRef} className="flex h-full flex-col bg-muted/30">
+   508→      {/* Toolbar */}
+   509→      <div className="flex h-10 shrink-0 items-center gap-1 border-b bg-background px-2">
+   510→        {/* Back / Forward — placeholder nav buttons (no history yet). */}
+   511→        <div className="hidden items-center gap-0.5 sm:flex">
+   512→          <Button
+   513→            variant="ghost"
+   514→            size="icon"
+   515→            className="size-7"
+   516→            disabled
+   517→            aria-label="Back"
+   518→          >
+   519→            <ArrowLeft className="size-3.5" />
+   520→          </Button>
+   521→          <Button
+   522→            variant="ghost"
+   523→            size="icon"
+   524→            className="size-7"
+   525→            disabled
+   526→            aria-label="Forward"
+   527→          >
+   528→            <ArrowRight className="size-3.5" />
+   529→          </Button>
+   530→        </div>
+   531→
+   532→        {/* Reload */}
+   533→        <TooltipProvider delayDuration={300}>
+   534→          <Tooltip>
+   535→            <TooltipTrigger asChild>
+   536→              <Button
+   537→                variant="ghost"
+   538→                size="icon"
+   539→                className="size-7"
+   540→                onClick={reload}
+   541→                aria-label="Reload preview"
+   542→              >
+   543→                <RefreshCw className="size-3.5" />
+   544→              </Button>
+   545→            </TooltipTrigger>
+   546→            <TooltipContent>Reload preview</TooltipContent>
+   547→          </Tooltip>
+   548→        </TooltipProvider>
+   549→
+   550→        {/* URL display — hidden on small screens to save space. */}
+   551→        <div className="hidden min-w-0 flex-1 items-center gap-2 rounded-md border bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground md:flex">
+   552→          <Globe className="size-3.5 shrink-0" />
+   553→          <span className="truncate font-mono">
+   554→            https://preview.local/{entry ?? "—"}
+   555→          </span>
+   556→        </div>
+   557→        {/* Spacer on mobile so the right-side cluster stays right-aligned. */}
+   558→        <div className="flex-1 md:hidden" />
+   559→
+   560→        {/* Device segmented control + Custom */}
+   561→        <div className="flex items-center gap-1">
+   562→          <div className="flex items-center rounded-md border p-0.5">
+   563→            <DeviceBtn
+   564→              active={device === "desktop" && !useCustom}
+   565→              onClick={() => {
+   566→                setUseCustom(false);
+   567→                setDevice("desktop");
+   568→              }}
+   569→              label="Desktop"
+   570→            >
+   571→              <Monitor className="size-3.5" />
+   572→            </DeviceBtn>
+   573→            <DeviceBtn
+   574→              active={device === "tablet" && !useCustom}
+   575→              onClick={() => {
+   576→                setUseCustom(false);
+   577→                setDevice("tablet");
+   578→              }}
+   579→              label="Tablet"
+   580→            >
+   581→              <Tablet className="size-3.5" />
+   582→            </DeviceBtn>
+   583→            <DeviceBtn
+   584→              active={device === "mobile" && !useCustom}
+   585→              onClick={() => {
+   586→                setUseCustom(false);
+   587→                setDevice("mobile");
+   588→              }}
+   589→              label="Mobile"
+   590→            >
+   591→              <Smartphone className="size-3.5" />
+   592→            </DeviceBtn>
+   593→          </div>
+   594→
+   595→          {/* Custom device size popover */}
+   596→          <Popover open={customOpen} onOpenChange={setCustomOpen}>
+   597→            <TooltipProvider delayDuration={300}>
+   598→              <Tooltip>
+   599→                <TooltipTrigger asChild>
+   600→                  <PopoverTrigger asChild>
+   601→                    <button
+   602→                      type="button"
+   603→                      aria-label="Custom device size"
+   604→                      className={cn(
+   605→                        "flex items-center justify-center rounded-md border p-1.5 transition-colors",
+   606→                        useCustom
+   607→                          ? "bg-primary text-primary-foreground"
+   608→                          : "text-muted-foreground hover:bg-accent"
+   609→                      )}
+   610→                    >
+   611→                      <SlidersHorizontal className="size-3.5" />
+   612→                    </button>
+   613→                  </PopoverTrigger>
+   614→                </TooltipTrigger>
+   615→                <TooltipContent>Custom size</TooltipContent>
+   616→              </Tooltip>
+   617→            </TooltipProvider>
+   618→            <PopoverContent className="w-56" align="end">
+   619→              <div className="space-y-2">
+   620→                <div className="text-xs font-medium">Custom device size</div>
+   621→                <div className="grid grid-cols-2 gap-2">
+   622→                  <label className="space-y-1 text-xs">
+   623→                    <span className="text-muted-foreground">Width</span>
+   624→                    <Input
+   625→                      type="number"
+   626→                      min={1}
+   627→                      max={4096}
+   628→                      value={customSize.width}
+   629→                      onChange={(e) =>
+   630→                        setCustomSize((s) => ({
+   631→                          ...s,
+   632→                          width: Number(e.target.value) || 0,
+   633→                        }))
+   634→                      }
+   635→                      className="h-8 text-xs"
+   636→                    />
+   637→                  </label>
+   638→                  <label className="space-y-1 text-xs">
+   639→                    <span className="text-muted-foreground">Height</span>
+   640→                    <Input
+   641→                      type="number"
+   642→                      min={1}
+   643→                      max={4096}
+   644→                      value={customSize.height}
+   645→                      onChange={(e) =>
+   646→                        setCustomSize((s) => ({
+   647→                          ...s,
+   648→                          height: Number(e.target.value) || 0,
+   649→                        }))
+   650→                      }
+   651→                      className="h-8 text-xs"
+   652→                    />
+   653→                  </label>
+   654→                </div>
+   655→                <div className="flex items-center gap-1.5">
+   656→                  <Button
+   657→                    size="sm"
+   658→                    className="h-7 flex-1 text-xs"
+   659→                    onClick={applyCustom}
+   660→                  >
+   661→                    Apply
+   662→                  </Button>
+   663→                  {useCustom && (
+   664→                    <Button
+   665→                      size="sm"
+   666→                      variant="outline"
+   667→                      className="h-7 text-xs"
+   668→                      onClick={() => {
+   669→                        setUseCustom(false);
+   670→                        setCustomOpen(false);
+   671→                      }}
+   672→                    >
+   673→                      Reset
+   674→                    </Button>
+   675→                  )}
+   676→                </div>
+   677→                {useCustom && (
+   678→                  <div className="text-[10px] text-muted-foreground">
+   679→                    Active: {customSize.width} × {customSize.height}px
+   680→                  </div>
+   681→                )}
+   682→              </div>
+   683→            </PopoverContent>
+   684→          </Popover>
+   685→        </div>
+   686→
+   687→        {/* More dropdown */}
+   688→        <DropdownMenu>
+   689→          <TooltipProvider delayDuration={300}>
+   690→            <Tooltip>
+   691→              <TooltipTrigger asChild>
+   692→                <DropdownMenuTrigger asChild>
+   693→                  <Button
+   694→                    variant="ghost"
+   695→                    size="icon"
+   696→                    className="size-7"
+   697→                    aria-label="More actions"
+   698→                  >
+   699→                    <MoreVertical className="size-3.5" />
+   700→                  </Button>
+   701→                </DropdownMenuTrigger>
+   702→              </TooltipTrigger>
+   703→              <TooltipContent>More</TooltipContent>
+   704→            </Tooltip>
+   705→          </TooltipProvider>
+   706→          <DropdownMenuContent align="end" className="w-44">
+   707→            <DropdownMenuItem onClick={handleInspect}>
+   708→              <SearchIcon className="mr-2 size-3.5" /> Inspect
+   709→            </DropdownMenuItem>
+   710→            <DropdownMenuItem onClick={handleFullscreen}>
+   711→              <Maximize className="mr-2 size-3.5" /> Fullscreen
+   712→            </DropdownMenuItem>
+   713→            <DropdownMenuItem onClick={handleOpenConsole}>
+   714→              <Terminal className="mr-2 size-3.5" /> Open console
+   715→            </DropdownMenuItem>
+   716→          </DropdownMenuContent>
+   717→        </DropdownMenu>
+   718→
+   719→        {/* Open in new tab */}
+   720→        <TooltipProvider delayDuration={300}>
+   721→          <Tooltip>
+   722→            <TooltipTrigger asChild>
+   723→              <Button
+   724→                variant="ghost"
+   725→                size="icon"
+   726→                className="size-7"
+   727→                onClick={openInNewTab}
+   728→                aria-label="Open in new tab"
+   729→              >
+   730→                <ExternalLink className="size-3.5" />
+   731→              </Button>
+   732→            </TooltipTrigger>
+   733→            <TooltipContent>Open in new tab</TooltipContent>
+   734→          </Tooltip>
+   735→        </TooltipProvider>
+   736→      </div>
+   737→
+   738→      {/* Preview area */}
+   739→      <div className="min-h-0 flex-1 overflow-auto scrollbar-thin p-4">
+   740→        {!entry ? (
+   741→          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+   742→            Add an <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-xs">index.html</code>
+   743→            file to see the preview.
+   744→          </div>
+   745→        ) : useCustom ? (
+   746→          // Custom device: render at the explicit pixel size, centered.
+   747→          <div className="flex h-full items-start justify-center">
+   748→            <div
+   749→              className="device-frame custom shrink-0 rounded-lg border bg-white"
+   750→              style={{
+   751→                width: Math.min(activeSize.width + 16, 4096),
+   752→                height: "100%",
+   753→                maxHeight: "100%",
+   754→              }}
+   755→            >
+   756→              {renderIframe("h-full w-full rounded-lg border-0", {
+   757→                width: activeSize.width,
+   758→                height: "100%",
+   759→              })}
+   760→            </div>
+   761→          </div>
+   762→        ) : device === "desktop" ? (
+   763→          renderIframe("h-full w-full rounded-lg border")
+   764→        ) : (
+   765→          <div className="flex h-full items-start justify-center">
+   766→            <div
+   767→              className={cn("device-frame", device)}
+   768→              style={{ width: activeSize.width + 16, height: "100%", maxHeight: "100%" }}
+   769→            >
+   770→              {renderIframe("h-full w-full rounded-[20px] border-0", {
+   771→                width: activeSize.width,
+   772→                height: "100%",
+   773→              })}
+   774→            </div>
+   775→          </div>
+   776→        )}
+   777→      </div>
+   778→
+   779→      {/* Screen reader-only announcement of preview size for accessibility. */}
+   780→      <span className="sr-only" aria-live="polite">
+   781→        Preview size: {activeSize.width} by {activeSize.height} pixels
+   782→      </span>
+   783→    </div>
+   784→  );
+   785→}
+   786→
+   787→function DeviceBtn({
+   788→  active,
+   789→  onClick,
+   790→  label,
+   791→  children,
+   792→}: {
+   793→  active: boolean;
+   794→  onClick: () => void;
+   795→  label: string;
+   796→  children: React.ReactNode;
+   797→}) {
+   798→  return (
+   799→    <TooltipProvider delayDuration={300}>
+   800→      <Tooltip>
+   801→        <TooltipTrigger asChild>
+   802→          <button
+   803→            type="button"
+   804→            onClick={onClick}
+   805→            aria-label={label}
+   806→            aria-pressed={active}
+   807→            className={cn(
+   808→              "flex items-center justify-center rounded px-1.5 py-1 transition-colors",
+   809→              active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
+   810→            )}
+   811→          >
+   812→            {children}
+   813→          </button>
+   814→        </TooltipTrigger>
+   815→        <TooltipContent>{label}</TooltipContent>
+   816→      </Tooltip>
+   817→    </TooltipProvider>
+   818→  );
+   819→}
+   820→
+   821→// Re-export for the page-level preview builder
+   822→export { buildPreviewDoc as buildPreview };
+   823→

@@ -148,6 +148,31 @@ const BRIDGE_SCRIPT = `
     try {
       var $ = function(sel){ return document.querySelector(sel); };
       switch (tool) {
+        case "open_page": {
+          // The preview iframe always shows the workspace entry file, so
+          // "opening" a page is a no-op — we just confirm the page is ready
+          // and return the current URL/title. The 'url' arg (if any) is
+          // ignored because we can't navigate the sandboxed iframe to
+          // arbitrary URLs.
+          result = {
+            ok: true,
+            url: window.location.href,
+            title: document.title || "",
+            ready: document.readyState,
+          };
+          break;
+        }
+        case "reload_page": {
+          // Reload by re-setting srcDoc — but we can't do that from inside
+          // the iframe. Instead, we signal the host to bump the preview
+          // nonce. For now, just report the current state.
+          result = {
+            ok: true,
+            note: "Reload requested. Use the Reload button in the preview toolbar to actually reload.",
+            title: document.title || "",
+          };
+          break;
+        }
         case "click": {
           var el = $(args.selector);
           if (!el) throw new Error("Element not found: " + args.selector);
@@ -305,24 +330,178 @@ const BRIDGE_SCRIPT = `
           try {
             var body = document.body;
             var de = document.documentElement;
-            var width = Math.max(body ? body.scrollWidth : 0, de ? de.scrollWidth : 0, window.innerWidth);
-            var height = Math.max(body ? body.scrollHeight : 0, de ? de.scrollHeight : 0, window.innerHeight);
+            var vpWidth = window.innerWidth;
+            var vpHeight = window.innerHeight;
+            var fullWidth = Math.max(body ? body.scrollWidth : 0, de ? de.scrollWidth : 0, vpWidth);
+            var fullHeight = Math.max(body ? body.scrollHeight : 0, de ? de.scrollHeight : 0, vpHeight);
+
+            // Approach 1: SVG foreignObject screenshot of the current viewport.
+            // Captures rendered HTML as an SVG image that can be displayed back
+            // to the user. We only capture the viewport (not the full page) to
+            // keep the data URL size manageable — foreignObject on a tall page
+            // can produce multi-MB strings that exceed postMessage limits.
             var clone = document.documentElement.cloneNode(true);
-            // Remove script tags from the clone so they don't re-execute if the
-            // SVG is ever rendered back into a document.
+            // Remove script tags from the clone so they don't re-execute if
+            // the SVG is ever rendered back into a document.
             var scripts = clone.querySelectorAll("script");
             for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+            // Remove the bridge script specifically (it has no src so the
+            // selector above already catches it, but be defensive).
             clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+            // Limit to viewport size to keep payload reasonable.
+            var svgWidth = Math.min(vpWidth, 1280);
+            var svgHeight = Math.min(vpHeight, 800);
             var svg =
-              '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '">' +
-              '<foreignObject width="100%" height="100%">' +
+              '<svg xmlns="http://www.w3.org/2000/svg" width="' + svgWidth + '" height="' + svgHeight + '">' +
+              '<foreignObject width="100%" height="100%" style="overflow:hidden">' +
               clone.outerHTML +
               '</foreignObject></svg>';
             var dataUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-            result = { dataUrl: dataUrl, width: width, height: height, ok: true };
+
+            // Approach 2: DOM snapshot as text (always works, used by the AI
+            // for debugging even if the SVG is too large or fails to render).
+            var domSnapshot = (document.body ? document.body.outerHTML : "").slice(0, 8000);
+
+            // Approach 3: viewport scroll/size info for the AI.
+            var scrollInfo = {
+              viewportWidth: vpWidth,
+              viewportHeight: vpHeight,
+              pageWidth: fullWidth,
+              pageHeight: fullHeight,
+              scrollX: window.scrollX,
+              scrollY: window.scrollY,
+              title: document.title || "",
+            };
+
+            result = {
+              dataUrl: dataUrl,
+              domSnapshot: domSnapshot,
+              scroll: scrollInfo,
+              width: svgWidth,
+              height: svgHeight,
+              ok: true,
+            };
           } catch (err) {
-            result = { ok: false, note: "Screenshot failed: " + (err && err.message ? err.message : String(err)) };
+            // Even on failure, return a DOM snapshot so the AI has something
+            // to work with.
+            try {
+              var fallback = (document.body ? document.body.outerHTML : "").slice(0, 8000);
+              result = {
+                ok: false,
+                note: "Screenshot failed: " + (err && err.message ? err.message : String(err)),
+                domSnapshot: fallback,
+              };
+            } catch (e2) {
+              result = { ok: false, note: "Screenshot failed: " + (err && err.message ? err.message : String(err)) };
+            }
           }
+          break;
+        }
+        case "terminal_exec": {
+          // A terminal-like REPL for executing JavaScript in the browser
+          // console. State persists across calls via window.__term so the
+          // AI can run multi-step interactive sessions: assign variables on
+          // one call (via term.set('x', 5)) and reference them on the next
+          // (via term.get('x')). Direct eval runs in the iframe global
+          // scope, so document, window, and all globals are accessible.
+          var code = String(args.code != null ? args.code : "");
+          if (!code.trim()) {
+            result = { ok: true, value: undefined, stdout: "" };
+            break;
+          }
+          // Lazily initialize the terminal state on first use.
+          if (!window.__term) {
+            window.__term = {
+              vars: {},        // user-defined variables (persisted across calls)
+              history: [],     // command history
+            };
+            // Expose 'term' as a global so the AI can call term.set/term.get
+            // to persist values between calls.
+            window.term = {
+              set: function(k, v){ window.__term.vars[k] = v; return v; },
+              get: function(k){ return window.__term.vars[k]; },
+              has: function(k){ return Object.prototype.hasOwnProperty.call(window.__term.vars, k); },
+              keys: function(){ return Object.keys(window.__term.vars); },
+              del: function(k){ delete window.__term.vars[k]; },
+              reset: function(){ window.__term.vars = {}; },
+            };
+          }
+          var term = window.__term;
+          term.history.push(code);
+          // Capture console output for this call only.
+          var captured = [];
+          var origLog = console.log.bind(console);
+          var origInfo = console.info.bind(console);
+          var origWarn = console.warn.bind(console);
+          var origErr = console.error.bind(console);
+          var capture = function(level){ return function(){
+            try {
+              var a = Array.prototype.slice.call(arguments);
+              var safe = a.map(function(x){
+                if (x instanceof Error) return x.stack || x.message;
+                if (typeof x === "object") { try { return JSON.stringify(x); } catch(e){ return String(x); } }
+                return String(x);
+              });
+              captured.push({ level: level, args: safe });
+            } catch(e){}
+            return level === "log" ? origLog.apply(console, arguments)
+              : level === "info" ? origInfo.apply(console, arguments)
+              : level === "warn" ? origWarn.apply(console, arguments)
+              : origErr.apply(console, arguments);
+          }; };
+          console.log = capture("log");
+          console.info = capture("info");
+          console.warn = capture("warn");
+          console.error = capture("error");
+          var value;
+          var isError = false;
+          var errMsg = "";
+          try {
+            // Direct eval in the iframe global scope. window, document,
+            // term (the persistent helper) are all accessible. Assignments
+            // like var x = 5 leak to the global scope and persist naturally.
+            // eslint-disable-next-line no-eval
+            value = eval(code);
+          } catch (e) {
+            isError = true;
+            errMsg = e && e.message ? e.message : String(e);
+            value = undefined;
+          } finally {
+            console.log = origLog;
+            console.info = origInfo;
+            console.warn = origWarn;
+            console.error = origErr;
+          }
+          // Serialize the return value (functions become "[Function]").
+          var serialized;
+          try {
+            serialized = (typeof value === "object" && value !== null)
+              ? JSON.parse(JSON.stringify(value, function(k, v){ return typeof v === "function" ? "[Function]" : v; }))
+              : value;
+          } catch (e) {
+            serialized = String(value);
+          }
+          // Format captured output as a string (like a terminal would).
+          var stdout = captured.map(function(c){
+            return c.args.join(" ");
+          }).join("\\n");
+          result = {
+            ok: !isError,
+            value: serialized,
+            stdout: stdout,
+            error: isError ? errMsg : undefined,
+            historyLen: term.history.length,
+            varsKeys: Object.keys(term.vars),
+          };
+          break;
+        }
+        case "terminal_reset": {
+          // Clear the terminal state (variables, history).
+          if (window.__term) {
+            window.__term.vars = {};
+            window.__term.history = [];
+          }
+          result = { ok: true, cleared: true };
           break;
         }
         case "wait": {
@@ -492,12 +671,18 @@ export function PreviewPane({
   }
 
   // Render the iframe element (shared across device modes).
+  // `allow-same-origin` is required for:
+  //   - Canvas-based screenshots (canvas.toDataURL taints without same-origin)
+  //   - Reading computed styles for get_element / inspect_element
+  //   - Reliable postMessage correlation
+  // The iframe content is the user's own workspace code (not untrusted
+  // third-party content), so the security trade-off is acceptable.
   const renderIframe = (className?: string, style?: React.CSSProperties) => (
     <iframe
       ref={iframeRef}
       title="preview"
       srcDoc={doc}
-      sandbox="allow-scripts"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
       className={cn("bg-white", className)}
       style={style}
     />

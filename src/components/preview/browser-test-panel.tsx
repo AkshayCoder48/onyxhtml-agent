@@ -25,6 +25,8 @@ const BROWSER_TOOLS = new Set([
   "take_screenshot",
   "run_javascript",
   "run_test",
+  "terminal_exec",
+  "terminal_reset",
   "check_links",
   "open_page",
   "reload_page",

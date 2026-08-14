@@ -22,23 +22,93 @@ export function ChatMessages() {
   const messages = useChatStore((s) => s.messages);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+  const atBottomRef = React.useRef(true);
   const [atBottom, setAtBottom] = React.useState(true);
+  // Distinguishes programmatic scrolls (from auto-scroll) so the scroll
+  // listener can ignore them and avoid an update feedback loop:
+  //   messages update → scrollToBottom → scroll event → setAtBottom(false)
+  //   → re-render → scrollToBottom skipped → async scroll completes →
+  //   setAtBottom(true) → re-render → scrollToBottom → repeat →
+  //   "Maximum update depth exceeded"
+  const programmaticScrollRef = React.useRef(false);
 
   function scrollToBottom(smooth = false) {
     const el = scrollRef.current;
     if (!el) return;
+    programmaticScrollRef.current = true;
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    // Reset the flag on the next frame so the scroll event from this
+    // programmatic scroll is ignored.
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          programmaticScrollRef.current = false;
+        });
+      });
+    } else {
+      setTimeout(() => { programmaticScrollRef.current = false; }, 60);
+    }
   }
 
+  // Auto-scroll on new content. We intentionally depend only on primitive
+  // counts (number of messages + number of segments in the last message)
+  // rather than the `messages` array itself — the array reference changes
+  // on every coalesced flush during streaming, which would otherwise fire
+  // this effect dozens of times per second and re-trigger the scroll loop.
+  const messagesLen = messages.length;
+  const lastMsgSegmentsLen =
+    messages[messages.length - 1]?.segments.length ?? 0;
+  const lastContentLen = React.useMemo(() => {
+    const last = messages[messages.length - 1];
+    if (!last) return 0;
+    let total = 0;
+    for (const seg of last.segments) {
+      if (seg.type === "content" || seg.type === "thinking") {
+        total += seg.content.length;
+      }
+    }
+    return total;
+  }, [messagesLen, lastMsgSegmentsLen, messages]);
+
   React.useEffect(() => {
-    if (atBottom) scrollToBottom();
-  }, [messages, atBottom]);
+    if (!atBottomRef.current) return;
+    // Use rAF so the scroll happens before paint (no layout thrash) and
+    // is batched with other rAF work.
+    if (typeof requestAnimationFrame === "function") {
+      const raf = requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        if (!atBottomRef.current) return;
+        programmaticScrollRef.current = true;
+        el.scrollTop = el.scrollHeight;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            programmaticScrollRef.current = false;
+          });
+        });
+      });
+      return () => cancelAnimationFrame(raf);
+    } else {
+      const el = scrollRef.current;
+      if (el) {
+        programmaticScrollRef.current = true;
+        el.scrollTop = el.scrollHeight;
+        setTimeout(() => { programmaticScrollRef.current = false; }, 60);
+      }
+    }
+  }, [messagesLen, lastMsgSegmentsLen, lastContentLen]);
 
   function onScroll() {
+    // Ignore scrolls triggered by our own scrollToBottom to break the loop.
+    if (programmaticScrollRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setAtBottom(distance < 80);
+    const next = distance < 80;
+    if (next !== atBottomRef.current) {
+      atBottomRef.current = next;
+      setAtBottom(next);
+    }
   }
 
   if (messages.length === 0) {

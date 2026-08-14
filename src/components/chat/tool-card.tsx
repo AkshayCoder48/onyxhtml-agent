@@ -34,6 +34,8 @@ const BROWSER_TOOLS = new Set([
   "take_screenshot",
   "run_javascript",
   "run_test",
+  "terminal_exec",
+  "terminal_reset",
   "check_links",
   "open_page",
   "reload_page",
@@ -278,7 +280,7 @@ function pickTargetArg(tool: string, args: Record<string, unknown> | undefined):
   if (BROWSER_TOOLS.has(tool)) {
     return (a.selector as string) ?? undefined;
   }
-  if (tool === "run_javascript") {
+  if (tool === "run_javascript" || tool === "terminal_exec") {
     return String(a.code ?? "")
       .split("\n")[0]
       .slice(0, 60);

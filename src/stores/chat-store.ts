@@ -39,42 +39,61 @@ type ChatState = {
 // During streaming, the agent emits dozens of SSE events per second
 // (reasoning_content, content, tool_call_delta, …). Calling zustand's
 // `set()` synchronously on every chunk triggers React's
-// `useSyncExternalStore` "Maximum update depth exceeded" guard because
-// each set() invalidates the snapshot and forces a re-render inside
-// an async callback.
+// "Maximum update depth exceeded" guard.
 //
-// To avoid this we buffer the *mutations* in a queue and flush them
-// in a single `set()` call on a microtask. This collapses N rapid
-// appends into one state update while preserving the order of mutations.
+// We buffer mutations in a queue and flush them on a requestAnimationFrame
+// (≈60fps). This is far less aggressive than queueMicrotask (which can fire
+// thousands of times per second) and avoids React's nested-update detection.
+// We also use a 16ms setTimeout fallback when rAF is unavailable (SSR / tests).
 
 type Mutator = (msgs: Message[]) => Message[];
 
 const pendingMutators: Mutator[] = [];
 let flushScheduled = false;
+// Whether any mutator actually changed the array reference. If no mutator
+// modified anything, we skip the `set()` call entirely to avoid unnecessary
+// re-renders.
+let anyMutatorChanged = false;
 
 function applyMutators(msgs: Message[]): Message[] {
-  if (pendingMutators.length === 0) return msgs;
+  if (pendingMutators.length === 0) {
+    anyMutatorChanged = false;
+    return msgs;
+  }
   let next = msgs;
-  // Work from a shallow copy so we don't mutate the cached state.
-  next = next.slice();
+  let changed = false;
   for (const fn of pendingMutators) {
-    next = fn(next);
+    const result = fn(next);
+    if (result !== next) {
+      changed = true;
+      next = result;
+    }
   }
   pendingMutators.length = 0;
+  anyMutatorChanged = changed;
   return next;
 }
 
 function scheduleFlush(set: (fn: (s: ChatState) => Partial<ChatState>) => void) {
   if (flushScheduled) return;
   flushScheduled = true;
-  queueMicrotask(() => {
+  const flush = () => {
     flushScheduled = false;
     set((s) => {
       if (pendingMutators.length === 0) return {};
       const messages = applyMutators(s.messages);
+      // If no mutator actually changed the array, don't trigger a re-render.
+      if (!anyMutatorChanged || messages === s.messages) return {};
       return { messages };
     });
-  });
+  };
+  // Prefer requestAnimationFrame for ~60fps coalescing (max one flush per
+  // frame). Fall back to setTimeout(0) when rAF isn't available.
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(flush);
+  } else {
+    setTimeout(flush, 16);
+  }
 }
 
 // Immutably patch a single message's segments. Returns a NEW messages array

@@ -1,0 +1,792 @@
+     1→import { db } from "@/lib/db";
+     2→import { safePath } from "@/lib/files";
+     3→import { TOOL_LABELS, ToolName } from "@/lib/types";
+     4→
+     5→// OpenAI function-calling tool spec
+     6→export type ToolDefinition = {
+     7→  type: "function";
+     8→  function: {
+     9→    name: string;
+    10→    description: string;
+    11→    parameters: {
+    12→      type: "object";
+    13→      properties: Record<string, unknown>;
+    14→      required?: string[];
+    15→    };
+    16→  };
+    17→};
+    18→
+    19→const BROWSER_TOOLS: ToolName[] = [
+    20→  "open_page",
+    21→  "reload_page",
+    22→  "click",
+    23→  "type",
+    24→  "press_key",
+    25→  "scroll",
+    26→  "hover",
+    27→  "select",
+    28→  "wait",
+    29→  "get_dom",
+    30→  "get_element",
+    31→  "inspect_element",
+    32→  "get_console_logs",
+    33→  "get_page_errors",
+    34→  "get_network_errors",
+    35→  "take_screenshot",
+    36→  "run_javascript",
+    37→  "run_test",
+    38→  "check_page",
+    39→  "check_console",
+    40→  "check_links",
+    41→];
+    42→
+    43→export function isBrowserTool(name: string): boolean {
+    44→  return (BROWSER_TOOLS as string[]).includes(name);
+    45→}
+    46→
+    47→export function isFileTool(name: string): boolean {
+    48→  return !isBrowserTool(name);
+    49→}
+    50→
+    51→// Get the OpenAI-format tool definitions passed to the provider.
+    52→export function getToolDefinitions(): ToolDefinition[] {
+    53→  return [
+    54→    // ---------- File tools ----------
+    55→    {
+    56→      type: "function",
+    57→      function: {
+    58→        name: "list_files",
+    59→        description:
+    60→          "List all file paths in the current workspace. Returns an array of relative paths. Use this to see what files exist before reading or editing.",
+    61→        parameters: { type: "object", properties: {}, required: [] },
+    62→      },
+    63→    },
+    64→    {
+    65→      type: "function",
+    66→      function: {
+    67→        name: "read_file",
+    68→        description:
+    69→          "Read the full text content of a file in the workspace. Use this to inspect existing HTML, CSS, or JS before editing.",
+    70→        parameters: {
+    71→          type: "object",
+    72→          properties: {
+    73→            path: {
+    74→              type: "string",
+    75→              description:
+    76→                "Relative path of the file, e.g. 'index.html' or 'assets/app.js'. Must not contain '..' or start with '/'.",
+    77→            },
+    78→          },
+    79→          required: ["path"],
+    80→        },
+    81→      },
+    82→    },
+    83→    {
+    84→      type: "function",
+    85→      function: {
+    86→        name: "create_file",
+    87→        description:
+    88→          "Create a NEW file with the given content. If a file at the path already exists it will be overwritten. Use write_file or edit_file to modify existing files.",
+    89→        parameters: {
+    90→          type: "object",
+    91→          properties: {
+    92→            path: {
+    93→              type: "string",
+    94→              description: "Relative path for the new file, e.g. 'pages/about.html'.",
+    95→            },
+    96→            content: {
+    97→              type: "string",
+    98→              description: "The full text content to write.",
+    99→            },
+   100→          },
+   101→          required: ["path", "content"],
+   102→        },
+   103→      },
+   104→    },
+   105→    {
+   106→      type: "function",
+   107→      function: {
+   108→        name: "write_file",
+   109→        description:
+   110→          "Overwrite an existing file's content entirely. Use edit_file for targeted changes; use this only when replacing the whole file.",
+   111→        parameters: {
+   112→          type: "object",
+   113→          properties: {
+   114→            path: { type: "string", description: "Relative path of the file to overwrite." },
+   115→            content: { type: "string", description: "The new full content." },
+   116→          },
+   117→          required: ["path", "content"],
+   118→        },
+   119→      },
+   120→    },
+   121→    {
+   122→      type: "function",
+   123→      function: {
+   124→        name: "edit_file",
+   125→        description:
+   126→          "Replace the first occurrence of `oldContent` with `newContent` inside an existing file. Use this for precise, surgical edits. The oldContent must match exactly (including whitespace).",
+   127→        parameters: {
+   128→          type: "object",
+   129→          properties: {
+   130→            path: { type: "string", description: "Relative path of the file to edit." },
+   131→            oldContent: {
+   132→              type: "string",
+   133→              description: "The exact text to find (must match exactly, including indentation).",
+   134→            },
+   135→            newContent: {
+   136→              type: "string",
+   137→              description: "The text to replace it with.",
+   138→            },
+   139→          },
+   140→          required: ["path", "oldContent", "newContent"],
+   141→        },
+   142→      },
+   143→    },
+   144→    {
+   145→      type: "function",
+   146→      function: {
+   147→        name: "delete_file",
+   148→        description:
+   149→          "Delete a file or a folder (folder deletion removes all files whose path starts with the folder prefix).",
+   150→        parameters: {
+   151→          type: "object",
+   152→          properties: {
+   153→            path: { type: "string", description: "Relative path of the file or folder to delete." },
+   154→          },
+   155→          required: ["path"],
+   156→        },
+   157→      },
+   158→    },
+   159→    {
+   160→      type: "function",
+   161→      function: {
+   162→        name: "rename_file",
+   163→        description: "Rename or move a file from `from` to `to`. Both paths must be relative.",
+   164→        parameters: {
+   165→          type: "object",
+   166→          properties: {
+   167→            from: { type: "string", description: "Current relative path." },
+   168→            to: { type: "string", description: "New relative path." },
+   169→          },
+   170→          required: ["from", "to"],
+   171→        },
+   172→      },
+   173→    },
+   174→    {
+   175→      type: "function",
+   176→      function: {
+   177→        name: "move_file",
+   178→        description:
+   179→          "Move a file or folder from `from` to `to`. Equivalent to rename_file: when `from` is a folder, all of its children are moved as well. Both paths must be relative.",
+   180→        parameters: {
+   181→          type: "object",
+   182→          properties: {
+   183→            from: { type: "string", description: "Current relative path of the file or folder." },
+   184→            to: { type: "string", description: "New relative path." },
+   185→          },
+   186→          required: ["from", "to"],
+   187→        },
+   188→      },
+   189→    },
+   190→    {
+   191→      type: "function",
+   192→      function: {
+   193→        name: "replace_content",
+   194→        description:
+   195→          "Replace occurrences of `find` with `replace` inside an existing file. By default replaces ALL occurrences (all=true). Set all=false to replace only the first occurrence. Returns the count of replacements made.",
+   196→        parameters: {
+   197→          type: "object",
+   198→          properties: {
+   199→            path: { type: "string", description: "Relative path of the file to edit." },
+   200→            find: { type: "string", description: "The exact text to find (must not be empty)." },
+   201→            replace: { type: "string", description: "The text to substitute for each match." },
+   202→            all: {
+   203→              type: "boolean",
+   204→              description: "If true (default), replace every occurrence. If false, replace only the first.",
+   205→            },
+   206→          },
+   207→          required: ["path", "find", "replace"],
+   208→        },
+   209→      },
+   210→    },
+   211→    {
+   212→      type: "function",
+   213→      function: {
+   214→        name: "create_folder",
+   215→        description:
+   216→          "Create a folder by placing a `.gitkeep` file inside it. Folders are implicit in the workspace; this just ensures the folder shows up in the tree.",
+   217→        parameters: {
+   218→          type: "object",
+   219→          properties: {
+   220→            path: { type: "string", description: "Relative path of the folder to create." },
+   221→          },
+   222→          required: ["path"],
+   223→        },
+   224→      },
+   225→    },
+   226→    {
+   227→      type: "function",
+   228→      function: {
+   229→        name: "search_files",
+   230→        description:
+   231→          "Search file contents for a case-insensitive query. Returns up to 50 matches with path, 1-based line number, and the matching line text.",
+   232→        parameters: {
+   233→          type: "object",
+   234→          properties: {
+   235→            query: { type: "string", description: "The text to search for." },
+   236→          },
+   237→          required: ["query"],
+   238→        },
+   239→      },
+   240→    },
+   241→    // ---------- Browser tools (executed client-side) ----------
+   242→    {
+   243→      type: "function",
+   244→      function: {
+   245→        name: "open_page",
+   246→        description:
+   247→          "Open a URL in the preview iframe. If `url` is omitted, opens the workspace entry HTML file. Use this to navigate to a specific page in the preview.",
+   248→        parameters: {
+   249→          type: "object",
+   250→          properties: {
+   251→            url: {
+   252→              type: "string",
+   253→              description: "Optional URL or relative path to open. Defaults to the entry file (index.html).",
+   254→            },
+   255→          },
+   256→          required: [],
+   257→        },
+   258→      },
+   259→    },
+   260→    {
+   261→      type: "function",
+   262→      function: {
+   263→        name: "reload_page",
+   264→        description: "Reload the current preview page.",
+   265→        parameters: { type: "object", properties: {}, required: [] },
+   266→      },
+   267→    },
+   268→    {
+   269→      type: "function",
+   270→      function: {
+   271→        name: "click",
+   272→        description:
+   273→          "Click an element matched by a CSS selector in the preview. Use a specific selector to avoid ambiguity.",
+   274→        parameters: {
+   275→          type: "object",
+   276→          properties: {
+   277→            selector: { type: "string", description: "CSS selector of the element to click." },
+   278→          },
+   279→          required: ["selector"],
+   280→        },
+   281→      },
+   282→    },
+   283→    {
+   284→      type: "function",
+   285→      function: {
+   286→        name: "type",
+   287→        description: "Type text into an input or textarea element matched by a CSS selector.",
+   288→        parameters: {
+   289→          type: "object",
+   290→          properties: {
+   291→            selector: { type: "string", description: "CSS selector of the input element." },
+   292→            text: { type: "string", description: "Text to type into the field." },
+   293→          },
+   294→          required: ["selector", "text"],
+   295→        },
+   296→      },
+   297→    },
+   298→    {
+   299→      type: "function",
+   300→      function: {
+   301→        name: "press_key",
+   302→        description:
+   303→          "Press a keyboard key (e.g. 'Enter', 'Tab', 'Escape', 'ArrowDown'). Dispatches a keydown+keyup event.",
+   304→        parameters: {
+   305→          type: "object",
+   306→          properties: {
+   307→            key: { type: "string", description: "Key name, e.g. 'Enter', 'Escape', 'a'." },
+   308→          },
+   309→          required: ["key"],
+   310→        },
+   311→      },
+   312→    },
+   313→    {
+   314→      type: "function",
+   315→      function: {
+   316→        name: "scroll",
+   317→        description:
+   318→          "Scroll the page (or a specific element) by x,y pixels. If no selector is provided, scrolls the window.",
+   319→        parameters: {
+   320→          type: "object",
+   321→          properties: {
+   322→            selector: { type: "string", description: "Optional CSS selector of the scroll container." },
+   323→            x: { type: "number", description: "Horizontal pixels to scroll." },
+   324→            y: { type: "number", description: "Vertical pixels to scroll." },
+   325→          },
+   326→          required: [],
+   327→        },
+   328→      },
+   329→    },
+   330→    {
+   331→      type: "function",
+   332→      function: {
+   333→        name: "hover",
+   334→        description: "Hover an element matched by a CSS selector (dispatches mouseenter + mouseover).",
+   335→        parameters: {
+   336→          type: "object",
+   337→          properties: {
+   338→            selector: { type: "string", description: "CSS selector of the element to hover." },
+   339→          },
+   340→          required: ["selector"],
+   341→        },
+   342→      },
+   343→    },
+   344→    {
+   345→      type: "function",
+   346→      function: {
+   347→        name: "select",
+   348→        description: "Select an option by value in a <select> element matched by a CSS selector.",
+   349→        parameters: {
+   350→          type: "object",
+   351→          properties: {
+   352→            selector: { type: "string", description: "CSS selector of the <select> element." },
+   353→            value: { type: "string", description: "The option value to select." },
+   354→          },
+   355→          required: ["selector", "value"],
+   356→        },
+   357→      },
+   358→    },
+   359→    {
+   360→      type: "function",
+   361→      function: {
+   362→        name: "wait",
+   363→        description: "Wait for a fixed number of milliseconds before continuing (useful for animations or async ops).",
+   364→        parameters: {
+   365→          type: "object",
+   366→          properties: {
+   367→            ms: { type: "number", description: "Milliseconds to wait (max 10000)." },
+   368→          },
+   369→          required: ["ms"],
+   370→        },
+   371→      },
+   372→    },
+   373→    {
+   374→      type: "function",
+   375→      function: {
+   376→        name: "get_dom",
+   377→        description:
+   378→          "Return the serialized HTML of the document (or of the first element matching the selector). Useful for inspecting the rendered DOM.",
+   379→        parameters: {
+   380→          type: "object",
+   381→          properties: {
+   382→            selector: { type: "string", description: "Optional CSS selector. If omitted, returns the full document HTML." },
+   383→          },
+   384→          required: [],
+   385→        },
+   386→      },
+   387→    },
+   388→    {
+   389→      type: "function",
+   390→      function: {
+   391→        name: "get_element",
+   392→        description:
+   393→          "Return the outerHTML of the first element matching the given CSS selector, along with a summary of its computed style (display, visibility, opacity, position, color, background).",
+   394→        parameters: {
+   395→          type: "object",
+   396→          properties: {
+   397→            selector: { type: "string", description: "CSS selector of the element to retrieve." },
+   398→          },
+   399→          required: ["selector"],
+   400→        },
+   401→      },
+   402→    },
+   403→    {
+   404→      type: "function",
+   405→      function: {
+   406→        name: "inspect_element",
+   407→        description:
+   408→          "Inspect a single element matched by a CSS selector. Returns tag name, attributes, text content, bounding client rect, and key computed style properties (display, visibility, opacity, position, color, backgroundColor).",
+   409→        parameters: {
+   410→          type: "object",
+   411→          properties: {
+   412→            selector: { type: "string", description: "CSS selector of the element to inspect." },
+   413→          },
+   414→          required: ["selector"],
+   415→        },
+   416→      },
+   417→    },
+   418→    {
+   419→      type: "function",
+   420→      function: {
+   421→        name: "get_console_logs",
+   422→        description: "Return the list of console messages captured from the preview (log/info/warn/error).",
+   423→        parameters: { type: "object", properties: {}, required: [] },
+   424→      },
+   425→    },
+   426→    {
+   427→      type: "function",
+   428→      function: {
+   429→        name: "get_page_errors",
+   430→        description: "Return the list of runtime page errors (uncaught exceptions and resource load failures).",
+   431→        parameters: { type: "object", properties: {}, required: [] },
+   432→      },
+   433→    },
+   434→    {
+   435→      type: "function",
+   436→      function: {
+   437→        name: "get_network_errors",
+   438→        description:
+   439→          "Return the list of failed resource loads captured by the preview (LINK, SCRIPT, IMG that failed to load). Each entry has url, type, status=0, and a timestamp.",
+   440→        parameters: { type: "object", properties: {}, required: [] },
+   441→      },
+   442→    },
+   443→    {
+   444→      type: "function",
+   445→      function: {
+   446→        name: "take_screenshot",
+   447→        description: "Capture a screenshot of the preview as a base64 PNG data URL.",
+   448→        parameters: { type: "object", properties: {}, required: [] },
+   449→      },
+   450→    },
+   451→    {
+   452→      type: "function",
+   453→      function: {
+   454→        name: "run_javascript",
+   455→        description:
+   456→          "Run arbitrary JavaScript inside the preview iframe. The code runs in the page's window context. Return values are JSON-serialized. Use this to inspect state or test behavior.",
+   457→        parameters: {
+   458→          type: "object",
+   459→          properties: {
+   460→            code: { type: "string", description: "JavaScript code to evaluate inside the preview." },
+   461→          },
+   462→          required: ["code"],
+   463→        },
+   464→      },
+   465→    },
+   466→    {
+   467→      type: "function",
+   468→      function: {
+   469→        name: "run_test",
+   470→        description:
+   471→          "Run a small test suite against the preview. Each assertion evaluates `code` inside the preview and compares the result (stringified) to `expected` when provided. Returns an array of { label, pass, actual, expected }.",
+   472→        parameters: {
+   473→          type: "object",
+   474→          properties: {
+   475→            name: { type: "string", description: "Optional name for the test run." },
+   476→            assertions: {
+   477→              type: "array",
+   478→              description: "List of assertions to evaluate inside the preview.",
+   479→              items: {
+   480→                type: "object",
+   481→                properties: {
+   482→                  label: { type: "string", description: "Human-readable label for the assertion." },
+   483→                  code: { type: "string", description: "JavaScript expression to evaluate." },
+   484→                  expected: { type: "string", description: "Optional expected value (stringified). If omitted, the assertion passes as long as code does not throw." },
+   485→                },
+   486→                required: ["label", "code"],
+   487→              },
+   488→            },
+   489→          },
+   490→          required: [],
+   491→        },
+   492→      },
+   493→    },
+   494→    {
+   495→      type: "function",
+   496→      function: {
+   497→        name: "check_page",
+   498→        description:
+   499→          "Convenience tool: open the entry page (if not already), wait briefly, then return a summary of the visible text and console logs. Use to verify a page renders without errors.",
+   500→        parameters: { type: "object", properties: {}, required: [] },
+   501→      },
+   502→    },
+   503→    {
+   504→      type: "function",
+   505→      function: {
+   506→        name: "check_console",
+   507→        description: "Convenience tool: return both console logs and page errors in a single call.",
+   508→        parameters: { type: "object", properties: {}, required: [] },
+   509→      },
+   510→    },
+   511→    {
+   512→      type: "function",
+   513→      function: {
+   514→        name: "check_links",
+   515→        description:
+   516→          "Collect every <a href> element in the preview and return its href, trimmed text, and type (absolute, relative, anchor, or mailto). Useful for auditing navigation and dead links.",
+   517→        parameters: { type: "object", properties: {}, required: [] },
+   518→      },
+   519→    },
+   520→  ];
+   521→}
+   522→
+   523→// Build a short human hint for a tool call, used in tool_call/tool_result events.
+   524→export function getToolDetail(name: string, args: Record<string, unknown>): string {
+   525→  try {
+   526→    switch (name) {
+   527→      case "list_files":
+   528→        return "all files";
+   529→      case "read_file":
+   530→      case "create_file":
+   531→      case "write_file":
+   532→      case "edit_file":
+   533→      case "delete_file":
+   534→      case "create_folder":
+   535→        return String(args.path ?? "");
+   536→      case "rename_file":
+   537→      case "move_file":
+   538→        return `${args.from ?? ""} → ${args.to ?? ""}`;
+   539→      case "replace_content":
+   540→        return String(args.path ?? "");
+   541→      case "search_files":
+   542→        return String(args.query ?? "");
+   543→      case "open_page":
+   544→        return typeof args.url === "string" ? args.url : "preview";
+   545→      case "reload_page":
+   546→        return "reload";
+   547→      case "click":
+   548→      case "hover":
+   549→      case "get_dom":
+   550→      case "get_element":
+   551→      case "inspect_element":
+   552→        return String(args.selector ?? "");
+   553→      case "type":
+   554→        return String(args.selector ?? "");
+   555→      case "press_key":
+   556→        return String(args.key ?? "");
+   557→      case "scroll":
+   558→        return args.selector ? String(args.selector) : "window";
+   559→      case "select":
+   560→        return String(args.selector ?? "");
+   561→      case "wait":
+   562→        return `${args.ms ?? 0}ms`;
+   563→      case "take_screenshot":
+   564→        return "screenshot";
+   565→      case "run_javascript":
+   566→        return "JS";
+   567→      case "run_test":
+   568→        return typeof args.name === "string" ? args.name : "test";
+   569→      case "get_console_logs":
+   570→        return "console";
+   571→      case "get_page_errors":
+   572→        return "errors";
+   573→      case "get_network_errors":
+   574→        return "network";
+   575→      case "check_page":
+   576→        return "page";
+   577→      case "check_console":
+   578→        return "console";
+   579→      case "check_links":
+   580→        return "links";
+   581→      default:
+   582→        return "";
+   583→    }
+   584→  } catch {
+   585→    return "";
+   586→  }
+   587→}
+   588→
+   589→export function getToolLabel(name: string): string {
+   590→  return (TOOL_LABELS as Record<string, string>)[name] ?? name;
+   591→}
+   592→
+   593→// ---------- Server-side file tool executor ----------
+   594→
+   595→export async function executeFileTool(
+   596→  name: string,
+   597→  args: Record<string, unknown>,
+   598→  workspaceId: string
+   599→): Promise<unknown> {
+   600→  switch (name) {
+   601→    case "list_files": {
+   602→      const files = await db.file.findMany({
+   603→        where: { workspaceId },
+   604→        select: { path: true },
+   605→        orderBy: { path: "asc" },
+   606→      });
+   607→      return { paths: files.map((f) => f.path) };
+   608→    }
+   609→    case "read_file": {
+   610→      const path = safePath(String(args.path ?? ""));
+   611→      if (!path) throw new Error("Invalid path");
+   612→      const file = await db.file.findUnique({
+   613→        where: { workspaceId_path: { workspaceId, path } },
+   614→      });
+   615→      if (!file) throw new Error(`File not found: ${path}`);
+   616→      const lines = file.content.split("\n").length;
+   617→      return { path: file.path, content: file.content, lines };
+   618→    }
+   619→    case "create_file":
+   620→    case "write_file": {
+   621→      const path = safePath(String(args.path ?? ""));
+   622→      if (!path) throw new Error("Invalid path");
+   623→      const content = String(args.content ?? "");
+   624→      const isBinary = false;
+   625→      const file = await db.file.upsert({
+   626→        where: { workspaceId_path: { workspaceId, path } },
+   627→        update: { content, isBinary },
+   628→        create: { workspaceId, path, content, isBinary },
+   629→      });
+   630→      return { path: file.path };
+   631→    }
+   632→    case "edit_file": {
+   633→      const path = safePath(String(args.path ?? ""));
+   634→      if (!path) throw new Error("Invalid path");
+   635→      const oldContent = String(args.oldContent ?? "");
+   636→      const newContent = String(args.newContent ?? "");
+   637→      const file = await db.file.findUnique({
+   638→        where: { workspaceId_path: { workspaceId, path } },
+   639→      });
+   640→      if (!file) throw new Error(`File not found: ${path}`);
+   641→      const idx = file.content.indexOf(oldContent);
+   642→      if (idx === -1) {
+   643→        throw new Error(
+   644→          `oldContent not found in ${path}. Make sure it matches exactly (including whitespace).`
+   645→        );
+   646→      }
+   647→      const next =
+   648→        file.content.slice(0, idx) + newContent + file.content.slice(idx + oldContent.length);
+   649→      await db.file.update({
+   650→        where: { id: file.id },
+   651→        data: { content: next },
+   652→      });
+   653→      return { path, replaced: 1 };
+   654→    }
+   655→    case "delete_file": {
+   656→      const path = safePath(String(args.path ?? ""));
+   657→      if (!path) throw new Error("Invalid path");
+   658→      const prefix = path.endsWith("/") ? path : path + "/";
+   659→      await db.file.deleteMany({
+   660→        where: {
+   661→          workspaceId,
+   662→          OR: [{ path }, { path: { startsWith: prefix } }],
+   663→        },
+   664→      });
+   665→      return { path };
+   666→    }
+   667→    case "rename_file":
+   668→    case "move_file": {
+   669→      const from = safePath(String(args.from ?? ""));
+   670→      const to = safePath(String(args.to ?? ""));
+   671→      if (!from || !to) throw new Error("Invalid path");
+   672→      if (from === to) throw new Error("Source and destination are the same");
+   673→      const existing = await db.file.findUnique({
+   674→        where: { workspaceId_path: { workspaceId, path: from } },
+   675→      });
+   676→      const children = await db.file.findMany({
+   677→        where: { workspaceId, path: { startsWith: from + "/" } },
+   678→      });
+   679→      if (!existing && children.length === 0) {
+   680→        throw new Error(`File or folder not found: ${from}`);
+   681→      }
+   682→      const destExists = await db.file.findUnique({
+   683→        where: { workspaceId_path: { workspaceId, path: to } },
+   684→      });
+   685→      if (destExists) throw new Error(`Destination already exists: ${to}`);
+   686→      // If `from` is a folder, also reject if `to` is inside `from` (would create a cycle).
+   687→      if (children.length > 0 && (to + "/").startsWith(from + "/")) {
+   688→        throw new Error("Cannot move a folder into itself");
+   689→      }
+   690→
+   691→      await db.$transaction(async (tx) => {
+   692→        if (existing) {
+   693→          await tx.file.update({
+   694→            where: { id: existing.id },
+   695→            data: { path: to },
+   696→          });
+   697→        }
+   698→        for (const child of children) {
+   699→          const newChildPath = to + child.path.slice(from.length);
+   700→          await tx.file.update({
+   701→            where: { id: child.id },
+   702→            data: { path: newChildPath },
+   703→          });
+   704→        }
+   705→      });
+   706→      return { from, to };
+   707→    }
+   708→    case "replace_content": {
+   709→      const path = safePath(String(args.path ?? ""));
+   710→      if (!path) throw new Error("Invalid path");
+   711→      const find = String(args.find ?? "");
+   712→      if (!find) throw new Error("`find` must not be empty");
+   713→      const replace = String(args.replace ?? "");
+   714→      const all = args.all !== false; // default true
+   715→      const file = await db.file.findUnique({
+   716→        where: { workspaceId_path: { workspaceId, path } },
+   717→      });
+   718→      if (!file) throw new Error(`File not found: ${path}`);
+   719→      const content = file.content;
+   720→      let count = 0;
+   721→      let next: string;
+   722→      if (all) {
+   723→        if (find === replace) {
+   724→          // No-op but still count occurrences for the response.
+   725→          count = content.split(find).length - 1;
+   726→          next = content;
+   727→        } else {
+   728→          // Use split/join to replace all occurrences without regex escaping concerns.
+   729→          const parts = content.split(find);
+   730→          count = parts.length - 1;
+   731→          next = parts.join(replace);
+   732→        }
+   733→      } else {
+   734→        const idx = content.indexOf(find);
+   735→        if (idx === -1) {
+   736→          throw new Error(
+   737→            `Text not found in ${path}. Make sure \`find\` matches exactly (including whitespace).`
+   738→          );
+   739→        }
+   740→        next = content.slice(0, idx) + replace + content.slice(idx + find.length);
+   741→        count = 1;
+   742→      }
+   743→      if (count === 0) {
+   744→        throw new Error(
+   745→          `Text not found in ${path}. Make sure \`find\` matches exactly (including whitespace).`
+   746→        );
+   747→      }
+   748→      await db.file.update({
+   749→        where: { id: file.id },
+   750→        data: { content: next },
+   751→      });
+   752→      return { path, replaced: count };
+   753→    }
+   754→    case "create_folder": {
+   755→      const folder = safePath(String(args.path ?? ""));
+   756→      if (!folder) throw new Error("Invalid path");
+   757→      const keepPath = folder.endsWith("/") ? folder + ".gitkeep" : folder + "/.gitkeep";
+   758→      await db.file.upsert({
+   759→        where: { workspaceId_path: { workspaceId, path: keepPath } },
+   760→        update: {},
+   761→        create: { workspaceId, path: keepPath, content: "", isBinary: false },
+   762→      });
+   763→      return { path: folder };
+   764→    }
+   765→    case "search_files": {
+   766→      const query = String(args.query ?? "").toLowerCase();
+   767→      if (!query) return { matches: [] };
+   768→      const files = await db.file.findMany({
+   769→        where: { workspaceId },
+   770→        select: { path: true, content: true },
+   771→      });
+   772→      const matches: { path: string; line: number; text: string }[] = [];
+   773→      outer: for (const f of files) {
+   774→        const lines = f.content.split("\n");
+   775→        for (let i = 0; i < lines.length; i++) {
+   776→          if (lines[i].toLowerCase().includes(query)) {
+   777→            matches.push({
+   778→              path: f.path,
+   779→              line: i + 1,
+   780→              text: lines[i].trim().slice(0, 200),
+   781→            });
+   782→            if (matches.length >= 50) break outer;
+   783→          }
+   784→        }
+   785→      }
+   786→      return { matches };
+   787→    }
+   788→    default:
+   789→      throw new Error(`Unknown file tool: ${name}`);
+   790→  }
+   791→}
+   792→

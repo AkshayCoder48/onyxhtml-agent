@@ -24,6 +24,8 @@ const BROWSER_TOOLS = new Set([
   "get_page_errors",
   "take_screenshot",
   "run_javascript",
+  "terminal_exec",
+  "terminal_reset",
 ]);
 
 type Bridge = {
@@ -37,8 +39,14 @@ type Bridge = {
 export function useChatStream(bridge: Bridge | null) {
   // Use stable selectors so the hook doesn't re-subscribe on every render.
   // Action functions in zustand are stable references.
+  //
+  // IMPORTANT: we deliberately do NOT subscribe to `messages` here. The
+  // `messages` array reference changes on every coalesced flush during
+  // streaming (dozens of times per second), which would re-render this hook
+  // and every downstream consumer on every chunk. Instead we read
+  // `messages` from `useChatStore.getState()` only where we actually need
+  // a snapshot (e.g. to find the last user message for Regenerate).
   const chatId = useChatStore((s) => s.chatId);
-  const messages = useChatStore((s) => s.messages);
   const appendMessage = useChatStore((s) => s.appendMessage);
   const startStreaming = useChatStore((s) => s.startStreaming);
   const stopStreaming = useChatStore((s) => s.stopStreaming);
@@ -50,6 +58,7 @@ export function useChatStream(bridge: Bridge | null) {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const setChatId = useChatStore((s) => s.setChatId);
   const setMessages = useChatStore((s) => s.setMessages);
+  const streamingMessageId = useChatStore((s) => s.streamingMessageId);
 
   const abortRef = React.useRef<AbortController | null>(null);
   const bridgeRef = React.useRef(bridge);
@@ -134,54 +143,88 @@ export function useChatStream(bridge: Bridge | null) {
       chatIdLocal: string,
       stream: AsyncGenerator<StreamEvent>,
       assistantId: string,
-      signal: AbortSignal
+      signal: AbortSignal,
+      onTimeout?: () => void
     ): Promise<{ browserPending: string[] }> => {
       const browserPending: string[] = [];
       const handled = handledBrowserCallsRef.current;
 
-      while (true) {
-        if (signal.aborted) break;
-        let evt: StreamEvent | null = null;
-        try {
-          const r = await stream.next();
-          if (r.done) break;
-          evt = r.value;
-        } catch (err) {
-          if (signal.aborted) break;
-          const msg = err instanceof Error ? err.message : "Stream error";
-          addErrorSegment(assistantId, msg);
-          toast.error("AI stream error", { description: msg });
-          break;
+      // Watchdog: if no event arrives for 5 minutes, break out of the loop so
+      // the spinner can't spin forever (e.g. if the server hangs or the SSE
+      // connection silently drops). Reset on every received event.
+      let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+      let timedOut = false;
+      const WATCHDOG_MS = 5 * 60 * 1000;
+      const resetWatchdog = () => {
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+        watchdogTimer = setTimeout(() => {
+          timedOut = true;
+          addErrorSegment(
+            assistantId,
+            "The AI stream has been silent for 5 minutes and was aborted. Please try again."
+          );
+          toast.error("AI stream timed out", {
+            description: "No events received for 5 minutes.",
+          });
+          if (onTimeout) onTimeout();
+        }, WATCHDOG_MS);
+      };
+      const clearWatchdog = () => {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
         }
-        if (!evt) continue;
+      };
+      resetWatchdog();
 
-        // Check for browser_tools_pending event variant — spec lists it as a
-        // possible stream event with callIds[]. We accept either the typed
-        // events or a loosely-typed payload via cast.
-        const loose = evt as unknown as {
-          type?: string;
-          callIds?: string[];
-          tool?: string;
-          callId?: string;
-        };
-        if (loose.type === "browser_tools_pending" && loose.callIds) {
-          for (const id of loose.callIds) if (!browserPending.includes(id)) browserPending.push(id);
-          setPendingBrowserTools([...browserPending]);
-          continue;
-        }
+      try {
+        while (true) {
+          if (signal.aborted || timedOut) break;
+          let evt: StreamEvent | null = null;
+          try {
+            const r = await stream.next();
+            if (r.done) break;
+            evt = r.value;
+            resetWatchdog();
+          } catch (err) {
+            if (signal.aborted) break;
+            const msg = err instanceof Error ? err.message : "Stream error";
+            addErrorSegment(assistantId, msg);
+            toast.error("AI stream error", { description: msg });
+            break;
+          }
+          if (!evt || timedOut) continue;
 
-        // Track browser tool calls we may need to execute locally.
-        if (evt.type === "tool_call" && BROWSER_TOOLS.has(evt.tool)) {
-          if (!handled.has(evt.callId)) {
-            handled.add(evt.callId);
+          // Check for browser_tools_pending event variant — spec lists it as a
+          // possible stream event with callIds[]. We accept either the typed
+          // events or a loosely-typed payload via cast.
+          const loose = evt as unknown as {
+            type?: string;
+            callIds?: string[];
+            tool?: string;
+            callId?: string;
+          };
+          if (loose.type === "browser_tools_pending" && loose.callIds) {
+            for (const id of loose.callIds) if (!browserPending.includes(id)) browserPending.push(id);
+            setPendingBrowserTools([...browserPending]);
+            continue;
+          }
+
+          // Track browser tool calls we may need to execute locally.
+          if (evt.type === "tool_call" && BROWSER_TOOLS.has(evt.tool)) {
+            if (!handled.has(evt.callId)) {
+              handled.add(evt.callId);
+            }
+          }
+
+          await handleEvent(assistantId, evt, chatIdLocal);
+
+          if (evt.type === "done") {
+            break;
           }
         }
-
-        await handleEvent(assistantId, evt, chatIdLocal);
-
-        if (evt.type === "done") {
-          break;
-        }
+      } finally {
+        clearWatchdog();
       }
 
       return { browserPending };
@@ -191,10 +234,18 @@ export function useChatStream(bridge: Bridge | null) {
 
   // Execute pending browser tool calls against the preview iframe, then call
   // the /continue endpoint with the results and resume streaming.
+  //
+  // IMPORTANT: The /continue endpoint can produce MORE browser tool calls
+  // (the model may chain open_page → get_console_logs → terminal_exec etc.).
+  // We loop: execute pending tools → call /continue → if /continue produced
+  // more browser tools, execute those too → repeat until no more pending.
+  // This was the root cause of the "spinner keeps running" bug — the client
+  // only called /continue once, so the second round of browser tools was
+  // never executed and stayed in "running" status forever.
   const executeBrowserToolsAndContinue = React.useCallback(
     async (
       chatIdLocal: string,
-      callIds: string[],
+      initialCallIds: string[],
       assistantId: string,
       signal: AbortSignal
     ) => {
@@ -205,50 +256,78 @@ export function useChatStream(bridge: Bridge | null) {
         });
         return;
       }
-      // Find each tool_call segment by callId to get its tool+args
-      const messages = useChatStore.getState().messages;
-      const msg = messages.find((m) => m.id === assistantId);
-      if (!msg) return;
 
-      const results: { callId: string; result?: unknown; error?: string }[] = [];
-      for (const callId of callIds) {
-        const seg = msg.segments.find(
-          (s) => s.type === "tool_call" && s.callId === callId
-        ) as Extract<MessageSegment, { type: "tool_call" }> | undefined;
-        if (!seg) {
-          results.push({ callId, error: "Tool call not found" });
-          continue;
+      // Loop: execute pending browser tools → call /continue → check for more.
+      let pendingCallIds = initialCallIds;
+      let iteration = 0;
+      const MAX_CONTINUE_ITERATIONS = 25; // safety cap to prevent infinite loops
+      while (pendingCallIds.length > 0 && !signal.aborted && iteration < MAX_CONTINUE_ITERATIONS) {
+        iteration++;
+
+        // Re-read the latest messages from the store on each iteration
+        // because /continue may have added new segments.
+        const currentMsgs = useChatStore.getState().messages;
+        const msg = currentMsgs.find((m) => m.id === assistantId);
+        if (!msg) break;
+
+        const results: { callId: string; result?: unknown; error?: string }[] = [];
+        for (const callId of pendingCallIds) {
+          const seg = msg.segments.find(
+            (s) => s.type === "tool_call" && s.callId === callId
+          ) as Extract<MessageSegment, { type: "tool_call" }> | undefined;
+          if (!seg) {
+            results.push({ callId, error: "Tool call not found" });
+            continue;
+          }
+          try {
+            const r = await b.execute(seg.tool, seg.arguments ?? {}, callId);
+            setToolResult(assistantId, callId, {
+              status: r.error ? "error" : "success",
+              result: r.result,
+              error: r.error,
+            });
+            results.push({ callId, result: r.result, error: r.error });
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : "Execution failed";
+            setToolResult(assistantId, callId, { status: "error", error: errMsg });
+            results.push({ callId, error: errMsg });
+          }
         }
+
+        setPendingBrowserTools([]);
+
+        // Call /continue and resume streaming. The stream may produce MORE
+        // browser_tools_pending events — we collect them and loop.
         try {
-          const r = await b.execute(seg.tool, seg.arguments ?? {}, callId);
-          setToolResult(assistantId, callId, {
-            status: r.error ? "error" : "success",
-            result: r.result,
-            error: r.error,
-          });
-          results.push({ callId, result: r.result, error: r.error });
+          const stream = api.streamContinue(
+            chatIdLocal,
+            { results },
+            signal
+          );
+          const { browserPending } = await consumeStream(
+            chatIdLocal,
+            stream,
+            assistantId,
+            signal,
+            () => {
+              abortRef.current?.abort();
+            }
+          );
+          pendingCallIds = browserPending;
         } catch (err) {
-          const errMsg = err instanceof Error ? err.message : "Execution failed";
-          setToolResult(assistantId, callId, { status: "error", error: errMsg });
-          results.push({ callId, error: errMsg });
+          if (signal.aborted) return;
+          const errMsg = err instanceof Error ? err.message : "Continue failed";
+          addErrorSegment(assistantId, errMsg);
+          toast.error("AI continue failed", { description: errMsg });
+          return;
         }
       }
-
-      setPendingBrowserTools([]);
-
-      // Call /continue and resume streaming.
-      try {
-        const stream = api.streamContinue(
-          chatIdLocal,
-          { results },
-          signal
+      // If we hit the iteration cap, surface a note so the user knows.
+      if (iteration >= MAX_CONTINUE_ITERATIONS && pendingCallIds.length > 0) {
+        addErrorSegment(
+          assistantId,
+          "Reached the maximum number of browser-tool continuation rounds (25). The agent may be stuck in a loop — try rephrasing your request."
         );
-        await consumeStream(chatIdLocal, stream, assistantId, signal);
-      } catch (err) {
-        if (signal.aborted) return;
-        const msg = err instanceof Error ? err.message : "Continue failed";
-        addErrorSegment(assistantId, msg);
-        toast.error("AI continue failed", { description: msg });
       }
     },
     [consumeStream, setToolResult, setPendingBrowserTools, addErrorSegment]
@@ -303,7 +382,11 @@ export function useChatStream(bridge: Bridge | null) {
           localChatId,
           stream,
           assistantId,
-          controller.signal
+          controller.signal,
+          () => {
+            // On timeout, abort the controller so the in-flight fetch is cancelled.
+            controller.abort();
+          }
         );
         if (browserPending.length > 0 && !controller.signal.aborted) {
           await executeBrowserToolsAndContinue(
@@ -350,25 +433,28 @@ export function useChatStream(bridge: Bridge | null) {
   // Keep the ref in sync so the retry action invokes the latest sendMessage.
   sendMessageRef.current = sendMessage;
 
-  // Derive the last user message content from the current messages array.
-  // The UI uses this to decide whether to render the Regenerate button — we
-  // only regenerate when there's a user message to regenerate from.
-  // (Computed inline rather than via useMemo so the React Compiler can
-  // optimize the component without manual memoization conflicts.)
-  let lastUserMessage = "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.role === "user") {
-      lastUserMessage = m.segments
-        .filter(
-          (s): s is Extract<MessageSegment, { type: "content" }> =>
-            s.type === "content"
-        )
-        .map((s) => s.content)
-        .join("");
-      break;
+  // Derive the last user message content. We read from getState() on each
+  // render so we don't have to subscribe to `messages` (which would cause
+  // this hook to re-render on every coalesced flush during streaming).
+  // The hook still re-renders when `chatId`, `isStreaming`, or
+  // `streamingMessageId` change — those are the only state values that
+  // affect the hook's returned values.
+  const lastUserMessage = React.useMemo(() => {
+    const msgs = useChatStore.getState().messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "user") {
+        return m.segments
+          .filter(
+            (s): s is Extract<MessageSegment, { type: "content" }> =>
+              s.type === "content"
+          )
+          .map((s) => s.content)
+          .join("");
+      }
     }
-  }
+    return "";
+  }, [chatId, isStreaming, streamingMessageId]);
 
   // Ref so the retry action from an error toast can re-invoke regenerate
   // without a self-reference (mirrors the sendMessageRef pattern).
@@ -427,7 +513,11 @@ export function useChatStream(bridge: Bridge | null) {
         localChatId,
         stream,
         assistantId,
-        controller.signal
+        controller.signal,
+        () => {
+          // On timeout, abort the controller so the in-flight fetch is cancelled.
+          controller.abort();
+        }
       );
       if (browserPending.length > 0 && !controller.signal.aborted) {
         await executeBrowserToolsAndContinue(

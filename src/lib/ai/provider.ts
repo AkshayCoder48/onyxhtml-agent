@@ -99,6 +99,7 @@ export type StreamArgs = {
   tools?: unknown[];
   signal?: AbortSignal;
   temperature?: number;
+  maxTokens?: number;
 };
 
 // Parse an SSE byte stream into discrete `data:` payloads.
@@ -286,6 +287,12 @@ async function* streamBuiltInZai(
     messages: args.messages,
     stream: true,
     thinking: { type: "enabled" },
+    // GLM-4.6 supports up to 16K output tokens. Without an explicit cap, the
+    // provider applies a much smaller default (often 4K), which causes the
+    // AI to stop mid-response after ~10-15K characters — exactly the
+    // "ai auto stops" symptom. We request the maximum so long generations
+    // complete fully.
+    max_tokens: args.maxTokens ?? 16384,
   };
   if (args.tools && args.tools.length > 0) {
     body.tools = args.tools;
@@ -359,6 +366,10 @@ async function* streamOpenAICompatible(
     model: provider.model,
     messages: args.messages,
     stream: true,
+    // Raise the output cap so long generations aren't truncated. Many
+    // OpenAI-compatible providers default to 4K tokens, which is too short
+    // for agentic work with tool calls + reasoning.
+    max_tokens: args.maxTokens ?? 16384,
   };
   if (args.tools && args.tools.length > 0) {
     body.tools = args.tools;

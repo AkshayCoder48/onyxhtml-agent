@@ -198,6 +198,8 @@ export type ToolName =
   | "take_screenshot"
   | "run_javascript"
   | "run_test"
+  | "terminal_exec"
+  | "terminal_reset"
   | "check_page"
   | "check_console"
   | "check_links";
@@ -232,6 +234,8 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   take_screenshot: "Take screenshot",
   run_javascript: "Run JavaScript",
   run_test: "Run test",
+  terminal_exec: "Terminal exec",
+  terminal_reset: "Terminal reset",
   check_page: "Check page",
   check_console: "Check console",
   check_links: "Check links",

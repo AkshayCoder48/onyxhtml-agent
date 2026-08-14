@@ -35,6 +35,8 @@ const BROWSER_TOOLS: ToolName[] = [
   "take_screenshot",
   "run_javascript",
   "run_test",
+  "terminal_exec",
+  "terminal_reset",
   "check_page",
   "check_console",
   "check_links",
@@ -494,6 +496,33 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "terminal_exec",
+        description:
+          "Execute JavaScript code in the browser preview as if typed into a dev-tools console (a real terminal). Use this to interactively inspect the page state, run debugging commands, evaluate expressions, call site functions, read variables, and chain multi-step REPL sessions. State persists across calls: use `term.set(\"x\", value)` to save a value and `term.get(\"x\")` to retrieve it later. `document`, `window`, and all globals are in scope. The return value is the last evaluated expression; captured console.log/info/warn/error output is returned in `stdout`. Prefer this over `run_javascript` when you want a conversational terminal-style debugging flow.",
+        parameters: {
+          type: "object",
+          properties: {
+            code: {
+              type: "string",
+              description: "JavaScript code to evaluate in the preview's global scope. Multiple statements are allowed; the value of the last expression is returned.",
+            },
+          },
+          required: ["code"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "terminal_reset",
+        description:
+          "Clear the terminal session state in the preview (drops all variables saved via `term.set(...)` and the command history). Use this to start a fresh debugging session without leftover state.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "check_page",
         description:
           "Convenience tool: open the entry page (if not already), wait briefly, then return a summary of the visible text and console logs. Use to verify a page renders without errors.",
@@ -566,6 +595,13 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "JS";
       case "run_test":
         return typeof args.name === "string" ? args.name : "test";
+      case "terminal_exec":
+        // Show the first line of the code as the detail (truncated).
+        return String(args.code ?? "")
+          .split("\n")[0]
+          .slice(0, 60);
+      case "terminal_reset":
+        return "clear";
       case "get_console_logs":
         return "console";
       case "get_page_errors":
