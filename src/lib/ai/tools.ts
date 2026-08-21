@@ -34,6 +34,8 @@ const BROWSER_TOOLS: ToolName[] = [
   "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "browser_execute_js",
+  "browser_read_page",
   "run_test",
   "terminal_exec",
   "terminal_reset",
@@ -468,6 +470,34 @@ export function getToolDefinitions(): ToolDefinition[] {
     {
       type: "function",
       function: {
+        name: "browser_execute_js",
+        description:
+          "Execute AI-generated JavaScript in the page context of the live preview and return a structured result. This is the primary browser-automation tool: click elements, fill and submit forms, scroll, wait for elements, read state, extract structured data, call page functions, or verify UI. The code runs with `document`, `window`, and all page globals in scope; `await`/promises are supported and `return` sends a value back. Console output (log/info/warn/error) is captured into `stdout`. Returns `{ success, result, url, title, stdout, error? }`. Prefer a `return` statement so the value lands in `result`.",
+        parameters: {
+          type: "object",
+          properties: {
+            code: {
+              type: "string",
+              description:
+                "JavaScript to run in the page. May be async (`await` is supported). Use `return` to return a result; the value is JSON-serialized into `result`.",
+            },
+          },
+          required: ["code"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "browser_read_page",
+        description:
+          "Observe the current preview page without changing it. Returns the page URL, title, readyState, visible text (up to 8000 chars), the main <h1>, a list of headings, form controls (input/textarea/select/button with type/name/id/placeholder), links (href + text), and counts of captured page errors and console logs. Use this as the 'observe' step of observe → execute → verify before and after browser_execute_js actions.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "run_test",
         description:
           "Run a small test suite against the preview. Each assertion evaluates `code` inside the preview and compares the result (stringified) to `expected` when provided. Returns an array of { label, pass, actual, expected }.",
@@ -593,6 +623,12 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "screenshot";
       case "run_javascript":
         return "JS";
+      case "browser_execute_js":
+        return String(args.code ?? "")
+          .split("\n")[0]
+          .slice(0, 60);
+      case "browser_read_page":
+        return "page";
       case "run_test":
         return typeof args.name === "string" ? args.name : "test";
       case "terminal_exec":
