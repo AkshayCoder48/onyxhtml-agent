@@ -1,13 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, ensureDbInitialized } from "@/lib/db";
 import { Workspace, WorkspaceSettings } from "@/lib/types";
 import { parseJSON, stringifyJSON } from "@/lib/settings";
 import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
 
-// Auto-create AGENT.md in any workspace that doesn't have it yet. This is a
-// lazy migration — the first time a workspace is accessed after this code
-// ships, AGENT.md is created. Existing AGENT.md files are NEVER overwritten
-// (the user may have edited it).
 async function ensureAgentMd(workspaceId: string): Promise<void> {
   try {
     const existing = await db.file.findUnique({
@@ -23,9 +19,7 @@ async function ensureAgentMd(workspaceId: string): Promise<void> {
         isBinary: false,
       },
     });
-  } catch {
-    // Race condition: another request created it concurrently. Safe to ignore.
-  }
+  } catch {}
 }
 
 function toWorkspaceDTO(row: {
@@ -51,49 +45,63 @@ function toWorkspaceDTO(row: {
 
 type Params = { params: Promise<{ id: string }> };
 
-// GET /api/workspaces/[id]
 export async function GET(_req: NextRequest, { params }: Params) {
-  const { id } = await params;
-  const ws = await db.workspace.findUnique({ where: { id } });
-  if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
-  // Lazy migration: ensure AGENT.md exists in this workspace.
-  await ensureAgentMd(id);
-  return NextResponse.json({ workspace: toWorkspaceDTO(ws) });
-}
-
-// PATCH /api/workspaces/[id]
-export async function PATCH(req: NextRequest, { params }: Params) {
-  const { id } = await params;
-  const ws = await db.workspace.findUnique({ where: { id } });
-  if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
-
-  let body: any;
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    await ensureDbInitialized();
+    const { id } = await params;
+    const ws = await db.workspace.findUnique({ where: { id } });
+    if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    await ensureAgentMd(id);
+    return NextResponse.json({ workspace: toWorkspaceDTO(ws) });
+  } catch (e) {
+    console.error('GET /api/workspaces/[id] error:', e);
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 });
   }
-
-  const data: { name?: string; activeFile?: string | null; settings?: string } = {};
-  if (typeof body?.name === "string" && body.name.trim()) data.name = body.name.trim();
-  if (body?.activeFile !== undefined) {
-    data.activeFile = body.activeFile === null ? null : String(body.activeFile);
-  }
-  if (body?.settings !== undefined && body.settings !== null && typeof body.settings === "object") {
-    const current = parseJSON<WorkspaceSettings>(ws.settings, {});
-    const merged = { ...current, ...(body.settings as object) };
-    data.settings = stringifyJSON(merged);
-  }
-
-  const updated = await db.workspace.update({ where: { id }, data });
-  return NextResponse.json({ workspace: toWorkspaceDTO(updated) });
 }
 
-// DELETE /api/workspaces/[id]
+export async function PATCH(req: NextRequest, { params }: Params) {
+  try {
+    await ensureDbInitialized();
+    const { id } = await params;
+    const ws = await db.workspace.findUnique({ where: { id } });
+    if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const data: { name?: string; activeFile?: string | null; settings?: string } = {};
+    if (typeof body?.name === "string" && body.name.trim()) data.name = body.name.trim();
+    if (body?.activeFile !== undefined) {
+      data.activeFile = body.activeFile === null ? null : String(body.activeFile);
+    }
+    if (body?.settings !== undefined && body.settings !== null && typeof body.settings === "object") {
+      const current = parseJSON<WorkspaceSettings>(ws.settings, {});
+      const merged = { ...current, ...(body.settings as object) };
+      data.settings = stringifyJSON(merged);
+    }
+
+    const updated = await db.workspace.update({ where: { id }, data });
+    return NextResponse.json({ workspace: toWorkspaceDTO(updated) });
+  } catch (e) {
+    console.error('PATCH /api/workspaces/[id] error:', e);
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 });
+  }
+}
+
 export async function DELETE(_req: NextRequest, { params }: Params) {
-  const { id } = await params;
-  const ws = await db.workspace.findUnique({ where: { id } });
-  if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
-  await db.workspace.delete({ where: { id } });
-  return NextResponse.json({ ok: true });
+  try {
+    await ensureDbInitialized();
+    const { id } = await params;
+    const ws = await db.workspace.findUnique({ where: { id } });
+    if (!ws) return NextResponse.json({ error: "Workspace not found" }, { status: 404 });
+    await db.workspace.delete({ where: { id } });
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    console.error('DELETE /api/workspaces/[id] error:', e);
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 });
+  }
 }
