@@ -8,6 +8,14 @@ import {
   AtSign,
   Settings as SettingsIcon,
   Loader2,
+  Sparkles,
+  Command,
+  FileText,
+  Hash,
+  Zap,
+  Plus,
+  X,
+  Image as ImageIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +32,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Badge } from "@/components/ui/badge";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -41,6 +50,7 @@ export function ChatPromptBox({
   isStreaming: boolean;
 }) {
   const [value, setValue] = React.useState("");
+  const [attachedFiles, setAttachedFiles] = React.useState<string[]>([]);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const openSettings = useUIStore((s) => s.openSettings);
   const activeFile = useWorkspaceStore((s) => s.activeFile);
@@ -52,15 +62,13 @@ export function ChatPromptBox({
   const setActiveProvider = useProviderStore((s) => s.setActiveProvider);
   const usable = isProviderUsable(activeProvider);
 
-  // Auto-grow textarea
   React.useEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
+    ta.style.height = Math.min(ta.scrollHeight, 200) + "px";
   }, [value]);
 
-  // Listen for external prompt set events (suggestion buttons)
   React.useEffect(() => {
     function onSetPrompt(e: Event) {
       const detail = (e as CustomEvent<string>).detail;
@@ -71,7 +79,6 @@ export function ChatPromptBox({
     return () => window.removeEventListener("chat:set-prompt", onSetPrompt as EventListener);
   }, []);
 
-  // Listen for home-screen send event — fires when user sends from home screen
   React.useEffect(() => {
     function onHomeSend(e: Event) {
       const detail = (e as CustomEvent<string>).detail;
@@ -93,6 +100,7 @@ export function ChatPromptBox({
     if (!v || isStreaming) return;
     onSend(v);
     setValue("");
+    setAttachedFiles([]);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
@@ -100,48 +108,54 @@ export function ChatPromptBox({
       e.preventDefault();
       handleSend();
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
-      // Don't submit on plain Enter — let user add newlines.
-      // Many chat UIs submit on Enter; we follow the spec which says Ctrl/Cmd+Enter sends.
-    }
   }
 
   function attachFile(file: File) {
-    // Read file content and inject as a code block reference
     const reader = new FileReader();
     reader.onload = () => {
       const text = String(reader.result ?? "");
       const fenced = `\n\n\`\`\`${file.name.split(".").pop() ?? ""} ${file.name}\n${text}\n\`\`\`\n`;
       setValue((v) => v + fenced);
+      setAttachedFiles((prev) => [...prev, file.name]);
     };
     reader.readAsText(file);
   }
 
   return (
-    <div className="border-t bg-background p-2.5">
-      <div className="rounded-xl border bg-card p-1.5 shadow-sm">
+    <div className="border-t bg-card/30 p-3 backdrop-blur">
+      {attachedFiles.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {attachedFiles.map((f) => (
+            <Badge key={f} variant="secondary" className="gap-1 rounded-full pr-1 text-xs">
+              <FileText className="size-3" /> {f}
+              <button onClick={() => setAttachedFiles((prev) => prev.filter((x) => x !== f))} className="ml-1 rounded-full p-0.5 hover:bg-muted">
+                <X className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      <div className={cn("group relative rounded-[20px] border bg-card shadow-sm transition-all", "focus-within:shadow-md focus-within:ring-1 focus-within:ring-violet-500/20 focus-within:border-violet-500/30")}>
+        <div className="absolute inset-0 rounded-[20px] bg-gradient-to-br from-violet-500/[0.02] to-blue-500/[0.02] opacity-0 transition-opacity group-focus-within:opacity-100" />
         <Textarea
           ref={taRef}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={
-            usable
-              ? "Ask AI to edit or test your website…"
-              : "Configure an AI provider in Settings to start chatting…"
-          }
-          className="min-h-[44px] resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none focus-visible:ring-0"
+          placeholder={usable ? "Ask AI to edit your website…" : "Configure AI provider to start…"}
+          className="relative min-h-[48px] resize-none border-0 bg-transparent px-4 py-3 text-[14px] leading-relaxed shadow-none focus-visible:ring-0 placeholder:text-muted-foreground/60"
         />
-        <div className="flex items-center justify-between gap-1 px-1 pt-1">
-          <div className="flex items-center gap-0.5">
-            {/* Attach */}
+
+        <div className="relative flex items-center justify-between gap-1 px-2 pb-2">
+          <div className="flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-7" aria-label="Attach">
-                  <Paperclip className="size-3.5" />
+                <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label="Attach">
+                  <Paperclip className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
+              <DropdownMenuContent align="start" className="rounded-xl">
                 <DropdownMenuItem
                   onSelect={() => {
                     const input = document.createElement("input");
@@ -152,112 +166,73 @@ export function ChatPromptBox({
                     };
                     input.click();
                   }}
+                  className="gap-2"
                 >
-                  Upload file…
+                  <FileText className="size-4" /> Upload file…
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onSelect={() => {
                     if (activeFile) {
                       const ext = activeFile.split(".").pop() ?? "";
                       const text = files[activeFile]?.content ?? "";
-                      setValue((v) =>
-                        v + `\n\n\`\`\`${ext} ${activeFile}\n${text}\n\`\`\`\n`
-                      );
+                      setValue((v) => v + `\n\n\`\`\`${ext} ${activeFile}\n${text}\n\`\`\`\n`);
+                      setAttachedFiles((prev) => [...prev, activeFile]);
                     }
                   }}
                   disabled={!activeFile}
+                  className="gap-2"
                 >
-                  Add workspace file
-                  {activeFile ? ` (${activeFile})` : ""}
+                  <Hash className="size-4" /> Add {activeFile ? activeFile : "file"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {/* Context */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="size-7" aria-label="Context">
-                  <AtSign className="size-3.5" />
+                <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label="Context">
+                  <AtSign className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (activeFile) {
-                      setValue((v) =>
-                        v + ` @file:${activeFile}`
-                      );
-                    }
-                  }}
-                  disabled={!activeFile}
-                >
-                  Current file{activeFile ? ` (${activeFile})` : ""}
+              <DropdownMenuContent align="start" className="rounded-xl">
+                <DropdownMenuItem onSelect={() => { if (activeFile) setValue((v) => v + ` @file:${activeFile}`); }} disabled={!activeFile} className="gap-2">
+                  <FileText className="size-4" /> Current file{activeFile ? ` (${activeFile})` : ""}
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => setValue((v) => v + " @workspace:all")}
-                >
-                  Entire workspace
+                <DropdownMenuItem onSelect={() => setValue((v) => v + " @workspace:all")} className="gap-2">
+                  <Hash className="size-4" /> Entire workspace
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Recent files
-                </div>
+                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Recent files</div>
                 {Object.keys(files)
                   .slice(0, 6)
                   .map((p) => (
-                    <DropdownMenuItem
-                      key={p}
-                      onSelect={() => setValue((v) => v + ` @file:${p}`)}
-                    >
-                      {p}
+                    <DropdownMenuItem key={p} onSelect={() => setValue((v) => v + ` @file:${p}`)} className="gap-2 font-mono text-xs">
+                      <FileText className="size-3" /> {p}
                     </DropdownMenuItem>
                   ))}
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {/* Provider / model selector */}
-            <TooltipProvider delayDuration={300}>
+            <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 gap-1.5 text-xs text-muted-foreground"
-                      >
-                        <span
-                          className={cn(
-                            "size-1.5 rounded-full",
-                            usable ? "bg-emerald-500" : "bg-amber-500"
-                          )}
-                        />
-                        <span className="max-w-[140px] truncate">
-                          {activeModelLabel(activeProvider)}
-                        </span>
+                      <Button variant="ghost" size="sm" className="h-8 gap-1.5 rounded-full text-xs">
+                        <span className={cn("size-2 rounded-full", usable ? "bg-emerald-500" : "bg-amber-500")} />
+                        <span className="max-w-[120px] truncate">{activeModelLabel(activeProvider)}</span>
                       </Button>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      {providers.length === 0 && (
-                        <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                          No providers configured
-                        </div>
-                      )}
+                    <DropdownMenuContent align="start" className="rounded-xl">
+                      {providers.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground">No providers configured</div>}
                       {providers.map((p) => (
-                        <DropdownMenuItem
-                          key={p.id}
-                          onSelect={() => setActiveProvider(p)}
-                          className="flex items-center justify-between gap-2"
-                        >
+                        <DropdownMenuItem key={p.id} onSelect={() => setActiveProvider(p)} className="flex items-center justify-between gap-2">
                           <span className="truncate">{p.name}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">
-                            {p.model}
-                          </span>
+                          <span className="font-mono text-[10px] text-muted-foreground">{p.model}</span>
                         </DropdownMenuItem>
                       ))}
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem onSelect={() => openSettings("providers")}>
-                        Manage providers…
+                      <DropdownMenuItem onSelect={() => openSettings("providers")} className="gap-2">
+                        <SettingsIcon className="size-4" /> Manage providers…
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -267,18 +242,12 @@ export function ChatPromptBox({
             </TooltipProvider>
           </div>
 
-          <div className="flex items-center gap-0.5">
-            <TooltipProvider delayDuration={300}>
+          <div className="flex items-center gap-1">
+            <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-7"
-                    onClick={() => openSettings("providers")}
-                    aria-label="AI settings"
-                  >
-                    <SettingsIcon className="size-3.5" />
+                  <Button variant="ghost" size="icon" className="size-8 rounded-full" onClick={() => openSettings("providers")} aria-label="AI settings">
+                    <SettingsIcon className="size-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>AI settings</TooltipContent>
@@ -286,37 +255,21 @@ export function ChatPromptBox({
             </TooltipProvider>
 
             {isStreaming ? (
-              <Button
-                size="icon"
-                variant="destructive"
-                className="size-8 rounded-full"
-                onClick={onStop}
-                aria-label="Stop"
-              >
-                <Square className="size-3.5" />
+              <Button size="icon" variant="destructive" className="size-9 rounded-full shadow-md" onClick={onStop} aria-label="Stop">
+                <Square className="size-4" />
               </Button>
             ) : (
-              <Button
-                size="icon"
-                className="size-8 rounded-full"
-                onClick={handleSend}
-                disabled={!value.trim()}
-                aria-label="Send"
-              >
-                {value.trim() ? (
-                  <ArrowUp className="size-4" />
-                ) : (
-                  <Loader2 className="size-4 opacity-50" />
-                )}
+              <Button size="icon" className="size-9 rounded-full bg-gradient-to-br from-violet-600 to-blue-600 shadow-md hover:from-violet-700 hover:to-blue-700" onClick={handleSend} disabled={!value.trim()} aria-label="Send">
+                <ArrowUp className="size-5" />
               </Button>
             )}
           </div>
         </div>
       </div>
-      <div className="mt-1 flex items-center justify-center">
-        <span className="text-[10px] text-muted-foreground">
-          ⌘/Ctrl + Enter to send
-        </span>
+
+      <div className="mt-2 flex items-center justify-center gap-2 text-[11px] text-muted-foreground">
+        <Command className="size-3" />
+        <span>⌘/Ctrl + Enter to send • Shift+Enter for new line</span>
       </div>
     </div>
   );

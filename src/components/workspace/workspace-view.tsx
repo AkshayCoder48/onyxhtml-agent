@@ -46,7 +46,6 @@ export function WorkspaceView() {
     (n) => setNetwork((prev) => [...prev, n])
   );
 
-  // Reset console when preview is reloaded
   const previewNonce = useWorkspaceStore((s) => s.previewNonce);
   React.useEffect(() => {
     setConsoleMessages([]);
@@ -54,7 +53,6 @@ export function WorkspaceView() {
     setNetwork([]);
   }, [previewNonce]);
 
-  // Initial console visibility from settings
   React.useEffect(() => {
     if (settings.consoleVisible !== undefined) {
       if (useUIStore.getState().consoleOpen === false && settings.consoleVisible) {
@@ -63,8 +61,6 @@ export function WorkspaceView() {
     }
   }, [settings.consoleVisible, setConsoleOpen]);
 
-  // The left panel of the workspace area switches based on activeSidebarView.
-  // In preview mode we hide the left panel entirely so the preview gets full width.
   const showLeftPanel = previewMode === "code";
   const leftPanelContent = (() => {
     switch (activeSidebarView) {
@@ -82,50 +78,31 @@ export function WorkspaceView() {
   })();
 
   return (
-    <ResizablePanelGroup direction="horizontal" className="h-full w-full">
-      {/* Workspace area (header + toolbar + editor/preview + console) */}
-      <ResizablePanel defaultSize={68} minSize={35}>
-        <div className="flex h-full flex-col">
+    <ResizablePanelGroup direction="horizontal" className="h-full w-full bg-background">
+      <ResizablePanel defaultSize={68} minSize={35} className="bg-background">
+        <div className="flex h-full flex-col bg-background">
           <WorkspaceHeader />
           <WorkspaceToolbar />
-          <div className="relative min-h-0 flex-1">
-            {/* Code editor + file explorer — visible only in code mode */}
+          <div className="relative min-h-0 flex-1 bg-background">
             {showLeftPanel && (
               <div className="absolute inset-0">
-                <ResizablePanelGroup direction="horizontal">
-                  <ResizablePanel defaultSize={22} minSize={12} maxSize={40}>
+                <ResizablePanelGroup direction="horizontal" className="h-full">
+                  <ResizablePanel defaultSize={22} minSize={12} maxSize={40} className="bg-card/30">
                     {leftPanelContent}
                   </ResizablePanel>
-                  <ResizableHandle />
-                  <ResizablePanel defaultSize={78} minSize={30}>
+                  <ResizableHandle withHandle className="w-1 bg-border/50 hover:bg-violet-500/20 transition-colors" />
+                  <ResizablePanel defaultSize={78} minSize={30} className="bg-background">
                     <CodeEditor />
                   </ResizablePanel>
                 </ResizablePanelGroup>
               </div>
             )}
-            {/*
-              Preview pane — ALWAYS MOUNTED so the iframe + bridge script stay
-              alive for browser-tool execution (terminal_exec, take_screenshot,
-              click, etc.) even when the user is in code mode. Without this,
-              every browser tools errors with "Preview iframe not available"
-              whenever the user hasn't manually switched to the Preview tab.
-              We use opacity-0 + pointer-events-none (NOT display:none) because
-              display:none can prevent the iframe's srcdoc from being parsed
-              and the bridge script from executing in some browsers. opacity-0
-              keeps the iframe fully rendered and functional — just invisible.
-            */}
-            <div
-              className={cn(
-                "absolute inset-0",
-                showLeftPanel && "opacity-0 pointer-events-none"
-              )}
-              aria-hidden={showLeftPanel}
-            >
+            <div className={cn("absolute inset-0 bg-muted/10", showLeftPanel && "opacity-0 pointer-events-none")} aria-hidden={showLeftPanel}>
               <PreviewPane iframeRef={iframeRef} />
             </div>
           </div>
           {consoleOpen && (
-            <div className="h-56 shrink-0">
+            <div className="h-56 shrink-0 border-t bg-card">
               <ConsoleDrawer
                 open={consoleOpen}
                 onToggle={() => setConsoleOpen(false)}
@@ -142,10 +119,8 @@ export function WorkspaceView() {
           )}
         </div>
       </ResizablePanel>
-      <ResizableHandle />
-
-      {/* Chat panel */}
-      <ResizablePanel defaultSize={32} minSize={20} maxSize={50}>
+      <ResizableHandle withHandle className="w-1.5 bg-border/30 hover:bg-violet-500/20 transition-colors data-[resize-handle-active]:bg-violet-500/30" />
+      <ResizablePanel defaultSize={32} minSize={20} maxSize={50} className="bg-background">
         <ChatPanel bridgeExecute={execute} />
       </ResizablePanel>
     </ResizablePanelGroup>

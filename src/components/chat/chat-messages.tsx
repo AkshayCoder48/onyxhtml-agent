@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown, RefreshCw } from "lucide-react";
+import { ArrowDown, RefreshCw, Sparkles, MessageSquare, Zap, Bot, User, Wand2, Lightbulb } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useUIStore } from "@/stores/ui-store";
@@ -11,10 +11,9 @@ import { ToolCard } from "./tool-card";
 import { MarkdownContent, ErrorCard } from "./markdown";
 import { AgentStatusInline } from "./agent-status-bar";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
-// Dispatch a global event so chat-panel.tsx (or any other consumer) can wire
-// it to the `regenerate` function exposed by useChatStream, without us
-// needing direct access to the hook here.
 function triggerRegenerate() {
   window.dispatchEvent(new CustomEvent("chat:regenerate"));
 }
@@ -25,12 +24,6 @@ export function ChatMessages() {
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const atBottomRef = React.useRef(true);
   const [atBottom, setAtBottom] = React.useState(true);
-  // Distinguishes programmatic scrolls (from auto-scroll) so the scroll
-  // listener can ignore them and avoid an update feedback loop:
-  //   messages update → scrollToBottom → scroll event → setAtBottom(false)
-  //   → re-render → scrollToBottom skipped → async scroll completes →
-  //   setAtBottom(true) → re-render → scrollToBottom → repeat →
-  //   "Maximum update depth exceeded"
   const programmaticScrollRef = React.useRef(false);
 
   function scrollToBottom(smooth = false) {
@@ -38,8 +31,6 @@ export function ChatMessages() {
     if (!el) return;
     programmaticScrollRef.current = true;
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-    // Reset the flag on the next frame so the scroll event from this
-    // programmatic scroll is ignored.
     if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -47,18 +38,14 @@ export function ChatMessages() {
         });
       });
     } else {
-      setTimeout(() => { programmaticScrollRef.current = false; }, 60);
+      setTimeout(() => {
+        programmaticScrollRef.current = false;
+      }, 60);
     }
   }
 
-  // Auto-scroll on new content. We intentionally depend only on primitive
-  // counts (number of messages + number of segments in the last message)
-  // rather than the `messages` array itself — the array reference changes
-  // on every coalesced flush during streaming, which would otherwise fire
-  // this effect dozens of times per second and re-trigger the scroll loop.
   const messagesLen = messages.length;
-  const lastMsgSegmentsLen =
-    messages[messages.length - 1]?.segments.length ?? 0;
+  const lastMsgSegmentsLen = messages[messages.length - 1]?.segments.length ?? 0;
   const lastContentLen = React.useMemo(() => {
     const last = messages[messages.length - 1];
     if (!last) return 0;
@@ -73,8 +60,6 @@ export function ChatMessages() {
 
   React.useEffect(() => {
     if (!atBottomRef.current) return;
-    // Use rAF so the scroll happens before paint (no layout thrash) and
-    // is batched with other rAF work.
     if (typeof requestAnimationFrame === "function") {
       const raf = requestAnimationFrame(() => {
         const el = scrollRef.current;
@@ -94,13 +79,14 @@ export function ChatMessages() {
       if (el) {
         programmaticScrollRef.current = true;
         el.scrollTop = el.scrollHeight;
-        setTimeout(() => { programmaticScrollRef.current = false; }, 60);
+        setTimeout(() => {
+          programmaticScrollRef.current = false;
+        }, 60);
       }
     }
   }, [messagesLen, lastMsgSegmentsLen, lastContentLen]);
 
   function onScroll() {
-    // Ignore scrolls triggered by our own scrollToBottom to break the loop.
     if (programmaticScrollRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
@@ -116,34 +102,32 @@ export function ChatMessages() {
     return <EmptyChat />;
   }
 
-  // Determine whether the LAST message is an assistant message — we render
-  // the Regenerate action only for that case, and only while not streaming.
   const lastMsg = messages[messages.length - 1];
   const showRegenerate = !isStreaming && lastMsg?.role === "assistant";
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-y-auto scrollbar-thin"
-      >
-        <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-4">
-          {messages.map((m) => (
-            <MessageItem key={m.id} message={m} streaming={isStreaming} />
+      <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
+        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-4 py-6">
+          {messages.map((m, idx) => (
+            <MessageItem key={m.id} message={m} streaming={isStreaming && idx === messages.length - 1} />
           ))}
-          {isStreaming && <div className="h-1 w-1 animate-pulse-soft rounded-full bg-accent-strong" />}
+          {isStreaming && (
+            <div className="flex items-center gap-2 py-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/10">
+                <div className="size-2 animate-pulse rounded-full bg-violet-500" />
+              </div>
+              <div className="flex gap-1">
+                <span className="typing-dot size-1.5 rounded-full bg-muted-foreground" />
+                <span className="typing-dot size-1.5 rounded-full bg-muted-foreground" />
+                <span className="typing-dot size-1.5 rounded-full bg-muted-foreground" />
+              </div>
+            </div>
+          )}
           {showRegenerate && (
             <div className="flex justify-start">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={triggerRegenerate}
-                className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-                aria-label="Regenerate last response"
-              >
-                <RefreshCw className="size-3.5" />
-                Regenerate
+              <Button variant="ghost" size="sm" onClick={triggerRegenerate} className="h-8 gap-1.5 rounded-full border bg-card text-xs shadow-sm hover:bg-accent">
+                <RefreshCw className="size-3.5" /> Regenerate
               </Button>
             </div>
           )}
@@ -157,35 +141,21 @@ export function ChatMessages() {
             setAtBottom(true);
             scrollToBottom(true);
           }}
-          className="absolute bottom-3 left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md"
+          className="absolute bottom-4 left-1/2 size-8 -translate-x-1/2 rounded-full border bg-card shadow-lg backdrop-blur"
           aria-label="Jump to latest"
         >
-          <ArrowDown className="size-3.5" />
+          <ArrowDown className="size-4" />
         </Button>
       )}
     </div>
   );
 }
 
-// Memoized MessageItem — only re-renders when its own `message` reference
-// changes (or `streaming` changes). This is the KEY performance fix for the
-// "stuck on thinking" visual lag: without memo, EVERY MessageItem re-renders
-// on every text delta (because the `messages` array reference changes in the
-// parent). With memo, only the streaming message re-renders; all other
-// messages skip re-rendering entirely, freeing the main thread to paint.
-const MessageItem = React.memo(function MessageItem({
-  message,
-  streaming,
-}: {
-  message: Message;
-  streaming: boolean;
-}) {
+const MessageItem = React.memo(function MessageItem({ message, streaming }: { message: Message; streaming: boolean }) {
   const openFile = useWorkspaceStore((s) => s.openTab);
   const setActiveFile = useWorkspaceStore((s) => s.setActiveFile);
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
 
-  // Stable callbacks so child components (ToolCard, MarkdownContent) don't
-  // re-render just because MessageItem re-rendered with a new inline fn.
   const handleOpenFile = React.useCallback(
     (path: string) => {
       setActiveFile(path);
@@ -198,110 +168,141 @@ const MessageItem = React.memo(function MessageItem({
   }, [setConsoleOpen]);
 
   if (message.role === "user") {
-    // Find the content segment(s)
     const content = message.segments
       .filter((s): s is Extract<MessageSegment, { type: "content" }> => s.type === "content")
       .map((s) => s.content)
       .join("");
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm text-primary-foreground">
-          {content}
+      <div className="flex justify-end gap-2">
+        <div className="max-w-[85%] rounded-[20px] rounded-br-[8px] bg-gradient-to-br from-violet-600 to-blue-600 px-4 py-2.5 text-[14px] leading-relaxed text-white shadow-md">
+          <div className="whitespace-pre-wrap">{content}</div>
+        </div>
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted">
+          <User className="size-4 text-muted-foreground" />
         </div>
       </div>
     );
   }
 
+  // Group tool calls for better visual hierarchy
+  const segments = message.segments;
+  const groupedSegments: (typeof segments[number] | { type: "tool_group"; tools: Extract<MessageSegment, { type: "tool_call" }>[] })[] = [];
+  let currentToolGroup: Extract<MessageSegment, { type: "tool_call" }>[] = [];
+
+  for (const seg of segments) {
+    if (seg.type === "tool_call") {
+      currentToolGroup.push(seg);
+    } else {
+      if (currentToolGroup.length > 0) {
+        if (currentToolGroup.length === 1) {
+          groupedSegments.push(currentToolGroup[0]);
+        } else {
+          groupedSegments.push({ type: "tool_group", tools: [...currentToolGroup] });
+        }
+        currentToolGroup = [];
+      }
+      groupedSegments.push(seg);
+    }
+  }
+  if (currentToolGroup.length > 0) {
+    if (currentToolGroup.length === 1) {
+      groupedSegments.push(currentToolGroup[0]);
+    } else {
+      groupedSegments.push({ type: "tool_group", tools: [...currentToolGroup] });
+    }
+  }
+
   return (
-    <div className="flex flex-col gap-1">
-      {message.segments.map((seg, i) => {
-        // Use the segment index as part of the key so legacy messages with
-        // duplicate callIds (from before the runTag fix) don't collide.
-        // New messages use unique `tc_<runTag>_<n>` callIds, but the index
-        // keeps the key stable across re-renders within a single message.
-        const segKey = `${i}-${seg.type === "tool_call" ? seg.callId : ""}`;
-        if (seg.type === "thinking") {
-          return (
-            <ThinkingPanel
-              key={segKey}
-              content={seg.content}
-              streaming={streaming && i === message.segments.length - 1}
-            />
-          );
-        }
-        if (seg.type === "content") {
-          return (
-            <div key={segKey} className="animate-fade-in">
-              <MarkdownContent
-                content={seg.content}
-                onFileClick={handleOpenFile}
-              />
-            </div>
-          );
-        }
-        if (seg.type === "tool_call") {
-          return (
-            <ToolCard
-              key={segKey}
-              seg={seg}
-              onOpenFile={handleOpenFile}
-              onOpenConsole={handleOpenConsole}
-            />
-          );
-        }
-        if (seg.type === "error") {
-          return (
-            <ErrorCard
-              key={segKey}
-              content={seg.content}
-              onRetry={triggerRegenerate}
-            />
-          );
-        }
-        return null;
-      })}
-      {message.segments.length === 0 && streaming && (
-        <AgentStatusInline />
-      )}
+    <div className="flex gap-2.5">
+      <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/10 to-blue-500/10 ring-1 ring-violet-500/10">
+        <Bot className="size-4 text-violet-600" />
+      </div>
+      <div className="min-w-0 flex-1 space-y-2">
+        {groupedSegments.map((seg, i) => {
+          if ((seg as any).type === "tool_group") {
+            const group = seg as { type: "tool_group"; tools: Extract<MessageSegment, { type: "tool_call" }>[] };
+            return (
+              <div key={`group-${i}`} className="space-y-2 rounded-xl border bg-muted/20 p-2">
+                <div className="flex items-center gap-1.5 px-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  <Zap className="size-3" /> {group.tools.length} tools
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                <div className="space-y-2">
+                  {group.tools.map((toolSeg, j) => (
+                    <ToolCard key={`${i}-${j}-${toolSeg.callId}`} seg={toolSeg} onOpenFile={handleOpenFile} onOpenConsole={handleOpenConsole} />
+                  ))}
+                </div>
+              </div>
+            );
+          }
+
+          const segKey = `${i}-${seg.type === "tool_call" ? (seg as any).callId : ""}`;
+          if (seg.type === "thinking") {
+            return <ThinkingPanel key={segKey} content={seg.content} streaming={streaming && i === groupedSegments.length - 1} />;
+          }
+          if (seg.type === "content") {
+            return (
+              <div key={segKey} className="animate-fade-in">
+                <MarkdownContent content={seg.content} onFileClick={handleOpenFile} />
+              </div>
+            );
+          }
+          if (seg.type === "tool_call") {
+            return <ToolCard key={segKey} seg={seg} onOpenFile={handleOpenFile} onOpenConsole={handleOpenConsole} />;
+          }
+          if (seg.type === "error") {
+            return <ErrorCard key={segKey} content={seg.content} onRetry={triggerRegenerate} />;
+          }
+          return null;
+        })}
+        {message.segments.length === 0 && streaming && <AgentStatusInline />}
+      </div>
     </div>
   );
 });
 
 function EmptyChat() {
   const suggestions = [
-    "Create landing page",
-    "Fix mobile layout",
-    "Add dark mode",
+    { icon: Wand2, title: "Create landing page", desc: "Modern hero, features, pricing", prompt: "Create a modern landing page with hero section, features grid, and pricing" },
+    { icon: Palette, title: "Fix mobile layout", desc: "Responsive improvements", prompt: "Make the current page fully responsive for mobile devices" },
+    { icon: Sparkles, title: "Add dark mode", desc: "Theme toggle & styles", prompt: "Add a dark mode toggle with smooth transitions" },
+    { icon: Lightbulb, title: "Improve design", desc: "Polish & animations", prompt: "Improve the design with better spacing, animations, and modern styling" },
   ];
   const setPrompt = useSetExternalPrompt();
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-10 text-center">
-      <div className="mb-3 flex size-10 items-center justify-center rounded-xl bg-accent-strong/10 text-accent-strong">
-        ✦
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 py-12">
+      <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-600 to-blue-600 text-white shadow-lg shadow-violet-500/20">
+        <Sparkles className="size-7" />
       </div>
-      <h2 className="text-lg font-semibold">What should we build?</h2>
-      <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-        Describe a feature or change and the AI will edit your files. You can iterate in the chat.
-      </p>
-      <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-        {suggestions.map((s) => (
-          <Button
-            key={s}
-            variant="outline"
-            size="sm"
-            className="h-7 text-xs"
-            onClick={() => setPrompt(s)}
-          >
-            {s}
-          </Button>
-        ))}
+      <h2 className="mt-5 text-xl font-bold tracking-tight">What should we build?</h2>
+      <p className="mt-2 max-w-sm text-center text-sm leading-relaxed text-muted-foreground text-balance">Describe a feature or change and the AI will edit your files. You can iterate in the chat with live preview.</p>
+
+      <div className="mt-8 grid w-full max-w-[480px] grid-cols-1 gap-2 sm:grid-cols-2">
+        {suggestions.map((s) => {
+          const Icon = s.icon;
+          return (
+            <button key={s.title} onClick={() => setPrompt(s.prompt)} className="group flex items-start gap-3 rounded-2xl border bg-card p-3.5 text-left transition-all hover:shadow-md hover:border-violet-500/20 hover:-translate-y-0.5">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-muted group-hover:bg-violet-500/10 transition-colors">
+                <Icon className="size-4 text-muted-foreground group-hover:text-violet-600" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-semibold">{s.title}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">{s.desc}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="mt-8 flex items-center gap-2 rounded-full border bg-muted/30 px-3 py-1.5">
+        <div className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+        <span className="text-[11px] text-muted-foreground">AI ready • OpenAI-compatible • Streaming tools</span>
       </div>
     </div>
   );
 }
 
-// Lightweight external prompt bridge for the empty-state suggestion buttons
 function useSetExternalPrompt() {
   return React.useCallback((text: string) => {
     window.dispatchEvent(new CustomEvent("chat:set-prompt", { detail: text }));

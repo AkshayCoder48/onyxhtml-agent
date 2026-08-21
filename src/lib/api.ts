@@ -287,14 +287,26 @@ export const api = {
   deleteProvider: (id: string) =>
     request<{ ok: boolean }>(`/api/providers/${id}`, { method: "DELETE" }),
 
-  testProvider: (id: string) =>
+  testProvider: (id: string, body?: { apiKey?: string }) =>
     request<{ ok: boolean; model?: string; error?: string; status?: number }>(
       `/api/providers/${id}/test`,
-      { method: "POST" }
+      { method: "POST", body: JSON.stringify(body ?? {}) }
     ),
 
   listProviderModels: (id: string) =>
     request<{ models: string[] }>(`/api/providers/${id}/models`),
+
+  fetchModelsForCustom: (body: { baseURL: string; apiKey?: string }) =>
+    request<{ models: string[]; error?: string }>("/api/providers/fetch-models", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  testCustomConnection: (body: { baseURL: string; apiKey?: string; model?: string }) =>
+    request<{ ok: boolean; model?: string; error?: string; status?: number }>(
+      "/api/providers/test-connection",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
 
   /* ------------------------------ Settings ----------------------------- */
 

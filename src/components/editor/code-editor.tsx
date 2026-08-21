@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { Sparkles, FileText } from "lucide-react";
+import { Sparkles, FileText, FileCode, Zap, AlertCircle, Check, Save } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useWorkspaceStore } from "@/stores/workspace-store";
@@ -19,23 +19,19 @@ import postcssPlugin from "prettier/plugins/postcss";
 import babelPlugin from "prettier/plugins/babel";
 import estreePlugin from "prettier/plugins/estree";
 import { api } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 
-// Prettier plugins are loaded as a static array so format-on-save doesn't
-// pay an await-import cost on every save. These are ESM modules with a
-// runtime default export (the .d.ts files only declare named exports, but
-// the bundled .mjs ships `export default` — allowSyntheticDefaultImports
-// from esModuleInterop lets us import them as defaults here).
 const PRETTIER_HTML_PLUGINS = [htmlPlugin, postcssPlugin, babelPlugin, estreePlugin];
 const PRETTIER_CSS_PLUGINS = [postcssPlugin];
 const PRETTIER_BABEL_PLUGINS = [babelPlugin, estreePlugin];
 
-// CodeMirror must be loaded only on the client.
 const CodeMirror = dynamic(
   () => import("@uiw/react-codemirror").then((m) => m.default),
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+        <div className="size-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground" />
         Loading editor…
       </div>
     ),
@@ -48,20 +44,11 @@ const jsLang = () =>
   import("@codemirror/lang-javascript").then((m) => m.javascript({ jsx: true }));
 const jsonLang = () => import("@codemirror/lang-json").then((m) => m.json());
 
-// Use string themes ("light"/"dark") handled natively by @uiw/react-codemirror.
-// Dynamic theme objects caused "Unrecognized extension value" errors, so we
-// rely on the built-in light/dark themes plus a small style override below.
-
-// HTML void elements that don't need closing tags.
 const HTML_VOID_TAGS = new Set([
   "area", "base", "br", "col", "embed", "hr", "img", "input",
   "link", "meta", "param", "source", "track", "wbr",
 ]);
 
-// ---------------------------------------------------------------------------
-// Linter: heuristic checks for HTML / CSS / JS / JSON.
-// Returns a CodeMirror 6 lint extension that runs on a 750ms debounce.
-// ---------------------------------------------------------------------------
 function buildLinter(activeFile: string | null): Extension {
   const source = (view: EditorView): Diagnostic[] => {
     if (!activeFile) return [];
@@ -73,9 +60,6 @@ function buildLinter(activeFile: string | null): Extension {
     const text = doc.toString();
 
     if (lang === "html") {
-      // Heuristic: find an opening tag on a line whose closing tag does not
-      // appear later on the same line. This catches the obvious cases
-      // (forgot </div>, etc.) without a full HTML parser.
       const openRe = /<(\w+)([^>]*?)(\/?)>/g;
       const lineCount = doc.lines;
       for (let i = 1; i <= lineCount; i++) {
@@ -88,9 +72,7 @@ function buildLinter(activeFile: string | null): Extension {
           const selfClose = m[3] === "/";
           if (selfClose) continue;
           if (HTML_VOID_TAGS.has(tag.toLowerCase())) continue;
-          // Skip comments / doctype-ish matches (tag name must start with a letter)
           if (!/^[a-zA-Z]/.test(tag)) continue;
-          // Skip <!-- comments  and <!doctype
           if (lineText.slice(m.index, m.index + 4) === "<!--") continue;
           if (lineText.slice(m.index, m.index + 2) === "<!") continue;
           const after = lineText.slice(m.index + m[0].length);
@@ -109,11 +91,8 @@ function buildLinter(activeFile: string | null): Extension {
         }
       }
     } else if (lang === "css") {
-      // Count braces globally; if unbalanced, flag the last unbalanced `{`.
       const opens: number[] = [];
       let depth = 0;
-      let unbalancedFrom = -1;
-      let unbalancedTo = -1;
       for (let i = 0; i < text.length; i++) {
         const c = text[i];
         if (c === "{") {
@@ -124,7 +103,6 @@ function buildLinter(activeFile: string | null): Extension {
             opens.pop();
             depth--;
           } else {
-            // stray `}` — flag it
             diagnostics.push({
               from: i,
               to: i + 1,
@@ -137,11 +115,9 @@ function buildLinter(activeFile: string | null): Extension {
       }
       if (depth > 0 && opens.length > 0) {
         const last = opens[opens.length - 1];
-        unbalancedFrom = last;
-        unbalancedTo = last + 1;
         diagnostics.push({
-          from: unbalancedFrom,
-          to: unbalancedTo,
+          from: last,
+          to: last + 1,
           severity: "warning",
           message: `Unbalanced braces: ${depth} unclosed '{'`,
           source: "css-lint",
@@ -152,10 +128,7 @@ function buildLinter(activeFile: string | null): Extension {
       for (let i = 1; i <= lineCount; i++) {
         const line = doc.line(i);
         const lineText = line.text;
-        // Strip line comments and block-comment fragments on this line for
-        // the string-balance check (simple heuristic).
         const codePart = lineText.replace(/\/\/.*$/, "");
-        // console.log warning
         const cl = /console\s*\.\s*log\s*\(/.exec(codePart);
         if (cl) {
           const from = line.from + cl.index;
@@ -168,8 +141,6 @@ function buildLinter(activeFile: string | null): Extension {
             source: "js-lint",
           });
         }
-        // Unclosed string literal heuristic — only single-line strings
-        // (no template-literal multi-line awareness).
         const singleQuotes = (codePart.match(/(^|[^\\])'/g) ?? []).length;
         const doubleQuotes = (codePart.match(/(^|[^\\])"/g) ?? []).length;
         if (singleQuotes % 2 !== 0) {
@@ -196,9 +167,6 @@ function buildLinter(activeFile: string | null): Extension {
   return linter(source, { delay: 750 });
 }
 
-// ---------------------------------------------------------------------------
-// Format-on-save: uses prettier/standalone + statically-imported plugins.
-// ---------------------------------------------------------------------------
 type FormatLanguage = "html" | "css" | "javascript" | "json" | "other";
 
 async function formatContent(
@@ -260,7 +228,6 @@ export function CodeEditor() {
     col: 1,
   });
 
-  // Load language extension based on active file
   React.useEffect(() => {
     let cancelled = false;
     if (!activeFile) {
@@ -293,12 +260,10 @@ export function CodeEditor() {
     };
   }, [activeFile]);
 
-  // Theme — use built-in light/dark string themes (robust, no dynamic imports).
   React.useEffect(() => {
     setTheme(resolvedTheme === "dark" ? "dark" : "light");
   }, [resolvedTheme]);
 
-  // Debounced autosave
   const saveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   React.useEffect(() => {
     if (!workspaceId || !activeFile) return;
@@ -311,24 +276,18 @@ export function CodeEditor() {
         if (!entry) return;
         await api.putFile(workspaceId, activeFile, entry.content);
         markSaved(activeFile);
-      } catch {
-        // ignore — user can still press Ctrl+S
-      }
+      } catch {}
     }, 800);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, [files, activeFile, workspaceId, settings.autoSave, unsavedPaths, markSaved]);
 
-  // Lint extension — memoized on activeFile so we don't reset diagnostics
-  // every render.
   const lintExtension = React.useMemo(
     () => buildLinter(activeFile),
     [activeFile]
   );
 
-  // Save handler used by the Mod-s keymap. Performs format-on-save when
-  // enabled, then PUTs the (possibly formatted) content to the API.
   const handleSave = React.useCallback(
     async (view: EditorView) => {
       if (!workspaceId || !activeFile) return;
@@ -340,8 +299,6 @@ export function CodeEditor() {
         try {
           const formatted = await formatContent(content, fmtLang);
           if (formatted !== content) {
-            // Update the editor doc. This fires onChange synchronously,
-            // which keeps the workspace store in sync.
             view.dispatch({
               changes: {
                 from: 0,
@@ -352,8 +309,6 @@ export function CodeEditor() {
             content = formatted;
           }
         } catch (e) {
-          // Don't block the save — toast a warning and save the
-          // unformatted content.
           toast.warning("Format failed", {
             description:
               e instanceof Error ? e.message : "Unknown formatting error",
@@ -375,9 +330,6 @@ export function CodeEditor() {
     [workspaceId, activeFile, settings.formatOnSave, markSaved]
   );
 
-  // Save keymap — bound inside the editor so it works while CodeMirror has
-  // focus (the global ⌘S handler in page.tsx skips editable targets, so
-  // CodeMirror's contenteditable would otherwise swallow it).
   const saveKeymap = React.useMemo(
     () =>
       keymap.of([
@@ -395,11 +347,15 @@ export function CodeEditor() {
 
   if (!activeFile) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-background text-center">
-        <FileText className="size-7 text-muted-foreground/50" />
-        <div className="text-sm font-medium">No file open</div>
-        <div className="text-xs text-muted-foreground">
-          Select a file from the explorer to start editing.
+      <div className="flex h-full flex-col items-center justify-center gap-4 bg-background p-8 text-center">
+        <div className="flex size-16 items-center justify-center rounded-2xl bg-muted">
+          <FileCode className="size-8 text-muted-foreground/50" />
+        </div>
+        <div>
+          <div className="text-sm font-semibold">No file open</div>
+          <div className="mt-1 max-w-[280px] text-xs leading-relaxed text-muted-foreground">
+            Select a file from the explorer to start editing. AI will open files automatically while working.
+          </div>
         </div>
       </div>
     );
@@ -428,7 +384,6 @@ export function CodeEditor() {
   const aiEditing = aiEditingFiles.has(activeFile);
   const tabSize = settings.tabSize ?? 2;
 
-  // Base extensions — always present.
   const extensions: Extension[] = [
     EditorView.lineWrapping,
     EditorView.updateListener.of((u) => {
@@ -446,7 +401,6 @@ export function CodeEditor() {
     saveKeymap,
   ];
 
-  // Minimap (only when enabled in settings).
   if (settings.minimap) {
     extensions.push(
       showMinimap.compute(["doc"], () => ({
@@ -465,9 +419,16 @@ export function CodeEditor() {
   return (
     <div className="relative flex h-full w-full flex-col bg-background">
       {aiEditing && (
-        <div className="flex items-center gap-1.5 border-b bg-accent-strong/10 px-3 py-1.5 text-xs text-accent-strong">
-          <Sparkles className="size-3 animate-pulse-soft" />
+        <div className="flex items-center gap-2 border-b bg-gradient-to-r from-violet-500/10 to-blue-500/10 px-3 py-2 text-xs font-medium text-violet-700 dark:text-violet-300">
+          <div className="flex size-5 items-center justify-center rounded-full bg-violet-500/20">
+            <Sparkles className="size-3 animate-pulse" />
+          </div>
           AI is editing this file — read-only mode
+          <div className="ml-auto flex gap-1">
+            <span className="size-1 animate-pulse rounded-full bg-violet-500" />
+            <span className="size-1 animate-pulse rounded-full bg-violet-500 [animation-delay:200ms]" />
+            <span className="size-1 animate-pulse rounded-full bg-violet-500 [animation-delay:400ms]" />
+          </div>
         </div>
       )}
       <div className="min-h-0 flex-1">
@@ -503,6 +464,7 @@ export function CodeEditor() {
         language={detectLanguage(activeFile).toUpperCase()}
         tabSize={tabSize}
         unsaved={unsavedPaths.has(activeFile)}
+        aiEditing={aiEditing}
       />
     </div>
   );
@@ -514,22 +476,43 @@ function StatusBar({
   language,
   tabSize,
   unsaved,
+  aiEditing,
 }: {
   line: number;
   col: number;
   language: string;
   tabSize: number;
   unsaved: boolean;
+  aiEditing?: boolean;
 }) {
   return (
-    <div className="flex h-6 shrink-0 items-center gap-4 border-t bg-muted/40 px-3 text-[10px] text-muted-foreground">
-      <span>
-        Ln {line}, Col {col}
-      </span>
-      <span className="font-mono">{language}</span>
-      <span>UTF-8</span>
-      <span>Spaces: {tabSize}</span>
-      {unsaved && <span className="text-amber-600 dark:text-amber-400">● Unsaved</span>}
+    <div className="flex h-7 shrink-0 items-center justify-between border-t bg-muted/30 px-3 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-3">
+        <span className="font-mono">
+          Ln {line}, Col {col}
+        </span>
+        <Badge variant="outline" className="h-5 rounded-full font-mono text-[10px]">
+          {language}
+        </Badge>
+        <span className="hidden sm:inline">UTF-8</span>
+        <span className="hidden sm:inline">Spaces: {tabSize}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        {aiEditing && (
+          <Badge className="h-5 gap-1 rounded-full bg-violet-500 text-[10px] text-white">
+            <Sparkles className="size-3" /> AI editing
+          </Badge>
+        )}
+        {unsaved ? (
+          <Badge variant="outline" className="h-5 gap-1 rounded-full border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-700">
+            <AlertCircle className="size-3" /> Unsaved
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="h-5 gap-1 rounded-full border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-700">
+            <Check className="size-3" /> Saved
+          </Badge>
+        )}
+      </div>
     </div>
   );
 }

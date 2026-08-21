@@ -1,11 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { Globe, MousePointerClick, ChevronRight, ChevronDown } from "lucide-react";
+import { Globe, MousePointerClick, ChevronRight, ChevronDown, Zap, Eye, Code2, Terminal } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import type { MessageSegment } from "@/lib/types";
 import { TOOL_LABELS } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 type BrowserToolSeg = Extract<MessageSegment, { type: "tool_call" }>;
 
@@ -35,7 +36,6 @@ const BROWSER_TOOLS = new Set([
 export function BrowserTestPanel() {
   const messages = useChatStore((s) => s.messages);
 
-  // Collect all browser tool_call segments across assistant messages, in order.
   const items = React.useMemo(() => {
     const list: { messageId: string; seg: BrowserToolSeg }[] = [];
     for (const m of messages) {
@@ -50,25 +50,28 @@ export function BrowserTestPanel() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2.5">
-        <Globe className="size-3.5 text-muted-foreground" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Browser / Test
-        </span>
-        <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-card/30 px-3">
+        <div className="flex size-7 items-center justify-center rounded-lg bg-muted">
+          <Globe className="size-4 text-muted-foreground" />
+        </div>
+        <span className="text-xs font-semibold">Browser</span>
+        <Badge variant="secondary" className="ml-auto h-5 rounded-full text-[10px]">
           {items.length} actions
-        </span>
+        </Badge>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-2">
         {items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
-            <MousePointerClick className="size-5 text-muted-foreground/50" />
-            <div className="text-xs text-muted-foreground">
-              Browser automation actions performed by the AI will appear here.
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-muted">
+              <MousePointerClick className="size-6 text-muted-foreground" />
+            </div>
+            <div>
+              <div className="text-sm font-medium">No browser actions yet</div>
+              <div className="mt-1 max-w-[200px] text-xs leading-relaxed text-muted-foreground">AI browser automation (click, type, screenshots) will appear here with live streaming</div>
             </div>
           </div>
         ) : (
-          <div className="space-y-1 px-2">
+          <div className="space-y-2">
             {items.map((it, idx) => (
               <BrowserItem key={it.seg.callId} idx={idx + 1} seg={it.seg} />
             ))}
@@ -84,49 +87,34 @@ function BrowserItem({ idx, seg }: { idx: number; seg: BrowserToolSeg }) {
   const status = seg.status;
   const argSummary = summarizeArgs(seg.tool, seg.arguments);
   return (
-    <div className="rounded-md border bg-card">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-xs"
-      >
-        {open ? (
-          <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-        )}
-        <span className="font-mono text-[10px] text-muted-foreground">#{idx}</span>
-        <span className="font-medium">{TOOL_LABELS[seg.tool as keyof typeof TOOL_LABELS] ?? seg.tool}</span>
-        <span className="truncate text-muted-foreground">{argSummary}</span>
-        <StatusDot status={status} />
+    <div className="overflow-hidden rounded-xl border bg-card transition-all hover:shadow-sm">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left">
+        <div className="flex size-6 items-center justify-center rounded-full bg-muted font-mono text-[10px] font-medium">#{idx}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium">{TOOL_LABELS[seg.tool as keyof typeof TOOL_LABELS] ?? seg.tool}</span>
+            <StatusDot status={status} />
+          </div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground">{argSummary}</div>
+        </div>
+        <div className="rounded-full p-1 hover:bg-muted">{open ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}</div>
       </button>
       {open && (
-        <div className="space-y-1.5 border-t px-2.5 py-2 text-xs">
+        <div className="space-y-2 border-t bg-muted/20 p-3 text-xs">
           {seg.detail && <div className="text-muted-foreground">{seg.detail}</div>}
           {seg.arguments && Object.keys(seg.arguments).length > 0 && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Arguments
-              </div>
-              <pre className="mt-1 overflow-x-auto rounded bg-muted p-2 text-[11px] font-mono">
-                {JSON.stringify(seg.arguments, null, 2)}
-              </pre>
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Arguments</div>
+              <pre className="overflow-x-auto rounded-lg border bg-zinc-950 p-2.5 font-mono text-[11px] text-zinc-100">{JSON.stringify(seg.arguments, null, 2)}</pre>
             </div>
           )}
           {seg.result !== undefined && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Result
-              </div>
-              <pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px] font-mono">
-                {typeof seg.result === "string"
-                  ? seg.result
-                  : JSON.stringify(seg.result, null, 2)}
-              </pre>
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Result</div>
+              <pre className="max-h-48 overflow-auto rounded-lg border bg-zinc-950 p-2.5 font-mono text-[11px] text-zinc-100">{typeof seg.result === "string" ? seg.result : JSON.stringify(seg.result, null, 2)}</pre>
             </div>
           )}
-          {seg.error && (
-            <div className="text-destructive">Error: {seg.error}</div>
-          )}
+          {seg.error && <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-2 text-red-600">Error: {seg.error}</div>}
         </div>
       )}
     </div>
@@ -135,14 +123,14 @@ function BrowserItem({ idx, seg }: { idx: number; seg: BrowserToolSeg }) {
 
 function StatusDot({ status }: { status?: string }) {
   const map: Record<string, { c: string; l: string }> = {
-    running: { c: "bg-amber-500 animate-pulse-soft", l: "Running" },
+    running: { c: "bg-amber-500 animate-pulse", l: "Running" },
     success: { c: "bg-emerald-500", l: "Success" },
-    error: { c: "bg-destructive", l: "Error" },
-    cancelled: { c: "bg-muted-foreground/40", l: "Cancelled" },
+    error: { c: "bg-red-500", l: "Error" },
+    cancelled: { c: "bg-zinc-400", l: "Cancelled" },
   };
   const s = map[status ?? "running"] ?? map.running;
   return (
-    <span className="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
       <span className={cn("size-1.5 rounded-full", s.c)} />
       {s.l}
     </span>
@@ -166,15 +154,9 @@ function summarizeArgs(tool: string, args: Record<string, unknown> | undefined):
     case "press_key":
       return String(a.key ?? "");
     case "run_javascript":
-      return String(a.code ?? "")
-        .split("\n")[0]
-        .slice(0, 60);
+      return String(a.code ?? "").split("\n")[0].slice(0, 60);
     case "run_test":
-      return typeof a.name === "string" && a.name.length > 0
-        ? a.name
-        : Array.isArray(a.assertions)
-          ? `${a.assertions.length} assertions`
-          : "";
+      return typeof a.name === "string" && a.name.length > 0 ? a.name : Array.isArray(a.assertions) ? `${a.assertions.length} assertions` : "";
     case "open_page":
     case "reload_page":
       return String(a.url ?? "");

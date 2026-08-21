@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { History, MoreHorizontal, Pencil, Trash2, MessageSquare, Copy } from "lucide-react";
+import { History, MoreHorizontal, Pencil, Trash2, MessageSquare, Copy, Clock, Hash } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 
 function relativeDay(iso: string): "Today" | "Yesterday" | "Earlier" {
   const d = new Date(iso);
@@ -77,9 +78,7 @@ export function ChatHistory() {
       if (activeChatId === id) setChatId(null);
       toast.success("Chat deleted");
     } catch (e) {
-      toast.error("Delete failed", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : undefined });
     }
   }
 
@@ -94,9 +93,7 @@ export function ChatHistory() {
       await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
       toast.success("Renamed");
     } catch (e) {
-      toast.error("Rename failed", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Rename failed", { description: e instanceof Error ? e.message : undefined });
     } finally {
       setRenameOpen(null);
     }
@@ -106,98 +103,92 @@ export function ChatHistory() {
     try {
       const { chat } = await api.duplicateChat(id);
       await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
-      toast.success("Chat duplicated", {
-        description: chat.title,
-      });
+      toast.success("Chat duplicated", { description: chat.title });
     } catch (e) {
-      toast.error("Duplicate failed", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Duplicate failed", { description: e instanceof Error ? e.message : undefined });
     }
   }
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b px-2.5">
-        <History className="size-3.5 text-muted-foreground" />
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Chat history
-        </span>
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b bg-card/30 px-3">
+        <div className="flex size-7 items-center justify-center rounded-lg bg-muted">
+          <History className="size-4 text-muted-foreground" />
+        </div>
+        <span className="text-xs font-semibold">History</span>
+        <Badge variant="secondary" className="ml-auto h-5 rounded-full text-[10px]">
+          {data?.length ?? 0}
+        </Badge>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
+      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-2">
         {isLoading ? (
-          <div className="space-y-1.5 px-2 py-2">
+          <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-10 animate-pulse rounded bg-muted" />
+              <div key={i} className="h-14 animate-pulse rounded-xl bg-muted" />
             ))}
           </div>
         ) : !data || data.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 px-4 py-10 text-center">
-            <MessageSquare className="size-5 text-muted-foreground/50" />
-            <div className="text-xs text-muted-foreground">No chats yet.</div>
+          <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+            <div className="flex size-12 items-center justify-center rounded-2xl bg-muted">
+              <MessageSquare className="size-6 text-muted-foreground" />
+            </div>
+            <div className="text-sm font-medium">No chats yet</div>
+            <div className="text-xs text-muted-foreground">Start a new chat to see history</div>
           </div>
         ) : (
-          <div className="py-1">
+          <div className="space-y-4">
             {(["Today", "Yesterday", "Earlier"] as const).map((g) => {
               const items = groups[g];
               if (!items || items.length === 0) return null;
               return (
-                <div key={g} className="mb-2">
-                  <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {g}
+                <div key={g} className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 py-1">
+                    <Clock className="size-3 text-muted-foreground" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{g}</span>
+                    <div className="h-px flex-1 bg-border" />
                   </div>
-                  {items.map((c) => (
-                    <div
-                      key={c.id}
-                      className={cn(
-                        "group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs hover:bg-accent",
-                        c.id === activeChatId && "bg-accent"
-                      )}
-                    >
-                      <button
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => setChatId(c.id)}
+                  <div className="space-y-1">
+                    {items.map((c) => (
+                      <div
+                        key={c.id}
+                        className={cn(
+                          "group flex items-center gap-2 rounded-xl border bg-card p-2.5 text-xs transition-all hover:shadow-sm hover:border-violet-500/20",
+                          c.id === activeChatId && "border-violet-500/30 bg-violet-500/5 shadow-sm"
+                        )}
                       >
-                        <div className="truncate text-sm">{c.title || "Untitled chat"}</div>
-                        <div className="text-[10px] text-muted-foreground">
-                          {timeShort(c.updatedAt)}
-                          {c.messageCount !== undefined ? ` · ${c.messageCount} msgs` : ""}
-                        </div>
-                      </button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-6 opacity-0 group-hover:opacity-100"
-                            aria-label="More"
-                          >
-                            <MoreHorizontal className="size-3.5" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onSelect={() =>
-                              setRenameOpen({ id: c.id, title: c.title })
-                            }
-                          >
-                            <Pencil className="size-3.5" /> Rename
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() => handleDuplicate(c.id)}
-                          >
-                            <Copy className="size-3.5" /> Duplicate
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() => handleDelete(c.id)}
-                            className="text-destructive focus:text-destructive"
-                          >
-                            <Trash2 className="size-3.5" /> Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  ))}
+                        <button className="min-w-0 flex-1 text-left" onClick={() => setChatId(c.id)}>
+                          <div className="truncate text-[13px] font-medium">{c.title || "Untitled chat"}</div>
+                          <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <span>{timeShort(c.updatedAt)}</span>
+                            {c.messageCount !== undefined && (
+                              <>
+                                <span>•</span>
+                                <span>{c.messageCount} msgs</span>
+                              </>
+                            )}
+                          </div>
+                        </button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" className="size-7 rounded-full opacity-0 group-hover:opacity-100" aria-label="More">
+                              <MoreHorizontal className="size-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end" className="rounded-xl">
+                            <DropdownMenuItem onSelect={() => setRenameOpen({ id: c.id, title: c.title })} className="gap-2">
+                              <Pencil className="size-4" /> Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => handleDuplicate(c.id)} className="gap-2">
+                              <Copy className="size-4" /> Duplicate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => handleDelete(c.id)} className="gap-2 text-destructive focus:text-destructive">
+                              <Trash2 className="size-4" /> Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -206,29 +197,20 @@ export function ChatHistory() {
       </div>
 
       <Dialog open={!!renameOpen} onOpenChange={(v) => !v && setRenameOpen(null)}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm rounded-2xl">
           <DialogHeader>
             <DialogTitle>Rename chat</DialogTitle>
           </DialogHeader>
-          <Input
-            autoFocus
-            defaultValue={renameOpen?.title ?? ""}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && renameOpen) {
-                commitRename(renameOpen.id, (e.target as HTMLInputElement).value);
-              }
-            }}
-          />
+          <Input autoFocus defaultValue={renameOpen?.title ?? ""} className="rounded-xl" onKeyDown={(e) => { if (e.key === "Enter" && renameOpen) { commitRename(renameOpen.id, (e.target as HTMLInputElement).value); } }} />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameOpen(null)}>
+            <Button variant="outline" onClick={() => setRenameOpen(null)} className="rounded-full">
               Cancel
             </Button>
             <Button
+              className="rounded-full"
               onClick={() => {
                 if (renameOpen) {
-                  const input = document.querySelector(
-                    'input[autofocus]'
-                  ) as HTMLInputElement | null;
+                  const input = document.querySelector("input[autofocus]") as HTMLInputElement | null;
                   commitRename(renameOpen.id, input?.value ?? renameOpen.title);
                 }
               }}
