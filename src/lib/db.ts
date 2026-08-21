@@ -11,3 +11,17 @@ export const db =
   })
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db
+
+let dbInitialized = false
+let dbInitPromise: Promise<void> | null = null
+
+export async function ensureDbInitialized(): Promise<void> {
+  if (dbInitialized) return
+  if (!dbInitPromise) {
+    dbInitPromise = (async () => {
+      await db.$queryRawUnsafe('SELECT 1')
+      dbInitialized = true
+    })()
+  }
+  await dbInitPromise
+}
