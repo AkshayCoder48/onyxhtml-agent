@@ -53,10 +53,14 @@ const BROWSER_TOOLS = new Set([
   "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "browser_execute_js",
+  "browser_read_page",
   "run_test",
   "terminal_exec",
   "terminal_reset",
   "check_links",
+  "check_page",
+  "check_console",
   "open_page",
   "reload_page",
 ]);
@@ -104,6 +108,8 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   get_network_errors: Globe,
   take_screenshot: Eye,
   run_javascript: Code2,
+  browser_execute_js: Code2,
+  browser_read_page: Eye,
   run_test: Zap,
   terminal_exec: Terminal,
   terminal_reset: Terminal,
@@ -178,7 +184,11 @@ export function ToolCard({
   const showStreamingView =
     (state === "generating" || state === "executing" || state === "streaming") && hasStreamingText;
 
-  const isConsoleTool = tool === "terminal_exec" || tool === "run_javascript" || tool === "run_test";
+  const isConsoleTool =
+    tool === "terminal_exec" ||
+    tool === "run_javascript" ||
+    tool === "browser_execute_js" ||
+    tool === "run_test";
 
   const isStreaming = state === "generating" || state === "executing" || state === "streaming" || state === "ready";
 
@@ -495,7 +505,7 @@ function pickTargetArg(tool: string, args: Record<string, unknown> | undefined):
   if (BROWSER_TOOLS.has(tool)) {
     return (a.selector as string) ?? undefined;
   }
-  if (tool === "run_javascript" || tool === "terminal_exec") {
+  if (tool === "run_javascript" || tool === "terminal_exec" || tool === "browser_execute_js") {
     return String(a.code ?? "").split("\n")[0].slice(0, 60);
   }
   return undefined;

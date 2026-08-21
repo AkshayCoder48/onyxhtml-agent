@@ -33,6 +33,8 @@ const BROWSER_TOOLS = new Set([
   "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "browser_execute_js",
+  "browser_read_page",
   "run_test",
   "terminal_exec",
   "terminal_reset",

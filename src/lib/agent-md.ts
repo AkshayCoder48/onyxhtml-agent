@@ -80,6 +80,12 @@ call \`open_page\` first.
   - \`document.querySelectorAll('h1').length\` — verify headings exist.
   - \`document.querySelector('.btn')?.textContent\` — verify button text.
   - \`getComputedStyle(document.body).backgroundColor\` — verify styling.
+- Use \`browser_execute_js\` for scripted browser automation — click elements,
+  fill/submit forms, extract structured data, wait for elements, or assert UI
+  state in one self-contained script. It returns \`{ success, result, url,
+  title, stdout, error? }\`; use \`return\` to send a value back.
+- Use \`browser_read_page\` to observe the page (URL, title, visible text,
+  headings, form controls, links) before/after actions.
 - Use \`take_screenshot\` to visually verify the page renders correctly.
 - Use \`check_console\` to make sure you didn't introduce console errors.
 - Use \`click\`, \`type\`, \`scroll\` to test interactivity.
@@ -114,6 +120,12 @@ not a narration of every step.
 - \`terminal_exec code\` — evaluate JavaScript in the preview's global scope.
   This is your PRIMARY testing tool. Returns the value of the last expression.
 - \`run_javascript code\` — alias for terminal_exec with output capture.
+- \`browser_execute_js code\` — run a self-contained JavaScript script in the
+  page (async/await supported, use \`return\` for a value). Returns
+  \`{ success, result, url, title, stdout, error? }\` — your main browser
+  automation + verification tool.
+- \`browser_read_page\` — observe the page: URL, title, visible text, headings,
+  form controls, and links (no side effects).
 - \`take_screenshot\` — get an SVG snapshot + text DOM dump of the viewport.
 - \`get_dom\` / \`get_element selector\` / \`inspect_element selector\` — inspect DOM.
 - \`check_console\` / \`get_console_logs\` — read preview console output.

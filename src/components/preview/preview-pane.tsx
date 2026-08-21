@@ -139,6 +139,19 @@ const BRIDGE_SCRIPT = `
     }
   }
 
+  // JSON-safe value serializer (functions become "[Function]", cyclic/throws
+  // fall back to String(v)). Used by browser_execute_js / terminal_exec.
+  function ser(v) {
+    try {
+      if (typeof v === "object" && v !== null) {
+        return JSON.parse(JSON.stringify(v, function(k, x){ return typeof x === "function" ? "[Function]" : x; }));
+      }
+      return v;
+    } catch (e) {
+      return String(v);
+    }
+  }
+
   window.addEventListener("message", function(ev) {
     var data = ev.data;
     if (!data || data.source !== "workspace-host") return;
@@ -275,6 +288,99 @@ const BRIDGE_SCRIPT = `
           result = { value: serialized };
           break;
         }
+        case "browser_read_page": {
+          var bodyText = (document.body && (document.body.innerText != null ? document.body.innerText : document.body.textContent)) || "";
+          var h1 = document.querySelector("h1");
+          var headings = [];
+          var hs = document.querySelectorAll("h1,h2,h3,h4,h5,h6");
+          for (var hi = 0; hi < hs.length && hi < 40; hi++) {
+            headings.push(hs[hi].tagName.toLowerCase() + ": " + ((hs[hi].textContent || "").trim().slice(0, 120)));
+          }
+          var controls = [];
+          var ces = document.querySelectorAll("input, textarea, select, button");
+          for (var ci = 0; ci < ces.length && ci < 60; ci++) {
+            var ce = ces[ci];
+            controls.push({
+              tag: ce.tagName.toLowerCase(),
+              type: ce.type || "",
+              name: ce.name || "",
+              id: ce.id || "",
+              placeholder: ce.placeholder || "",
+              text: (ce.innerText || ce.value || "").trim().slice(0, 80)
+            });
+          }
+          var links = [];
+          var as = document.querySelectorAll("a[href]");
+          for (var li = 0; li < as.length && li < 60; li++) {
+            links.push({ href: as[li].getAttribute("href") || "", text: (as[li].textContent || "").trim().slice(0, 80) });
+          }
+          result = {
+            url: window.location.href,
+            title: document.title || "",
+            readyState: document.readyState,
+            text: bodyText.slice(0, 8000),
+            textLength: bodyText.length,
+            h1: h1 ? (h1.textContent || "").trim().slice(0, 200) : null,
+            headings: headings,
+            controls: controls,
+            links: links,
+            pageErrors: errs.length,
+            consoleLogs: logs.length
+          };
+          break;
+        }
+        case "browser_execute_js": {
+          var code = String(args.code != null ? args.code : "");
+          if (!code.trim()) {
+            send({ callId: callId, result: { success: false, result: null, url: window.location.href, title: document.title || "", stdout: "", error: "No code provided" } });
+            return;
+          }
+          // Capture console output for this call (and forward it live so the
+          // ToolCard streams it). Restored once the script settles.
+          var captured = [];
+          var oLog = console.log.bind(console);
+          var oInfo = console.info.bind(console);
+          var oWarn = console.warn.bind(console);
+          var oErr = console.error.bind(console);
+          var grab = function(level, orig){
+            return function(){
+              try {
+                var a = Array.prototype.slice.call(arguments);
+                var safe = a.map(function(x){
+                  if (x instanceof Error) return x.stack || x.message;
+                  if (typeof x === "object") { try { return JSON.stringify(x); } catch(e){ return String(x); } }
+                  return String(x);
+                });
+                captured.push(safe.join(" "));
+                try { parent.postMessage({ source: "preview", kind: "console", callId: callId, level: level, args: safe, time: Date.now() }, "*"); } catch(e){}
+              } catch(e){}
+              return orig.apply(console, arguments);
+            };
+          };
+          console.log = grab("log", oLog);
+          console.info = grab("info", oInfo);
+          console.warn = grab("warn", oWarn);
+          console.error = grab("error", oErr);
+          var restore = function(){ console.log = oLog; console.info = oInfo; console.warn = oWarn; console.error = oErr; };
+          var finish = function(payload){
+            restore();
+            send({ callId: callId, result: payload });
+          };
+          try {
+            // Evaluate via an AsyncFunction so await/promises work and the
+            // script's variables stay scoped (don't leak into the page).
+            var AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+            var fn = new AsyncFunction(code);
+            Promise.resolve(fn()).then(function(value){
+              finish({ success: true, result: ser(value), url: window.location.href, title: document.title || "", stdout: captured.join("\\n"), error: undefined });
+            }).catch(function(e){
+              finish({ success: false, result: null, url: window.location.href, title: document.title || "", stdout: captured.join("\\n"), error: e && e.message ? e.message : String(e) });
+            });
+          } catch (e) {
+            finish({ success: false, result: null, url: window.location.href, title: document.title || "", stdout: captured.join("\\n"), error: e && e.message ? e.message : String(e) });
+          }
+          return;
+        }
         case "run_test": {
           var name = args.name != null ? String(args.name) : undefined;
           var assertions = Array.isArray(args.assertions) ? args.assertions : [];
@@ -316,6 +422,21 @@ const BRIDGE_SCRIPT = `
         }
         case "get_console_logs": {
           result = { logs: logs };
+          break;
+        }
+        case "check_console": {
+          result = { logs: logs, errors: errs };
+          break;
+        }
+        case "check_page": {
+          result = {
+            url: window.location.href,
+            title: document.title || "",
+            readyState: document.readyState,
+            text: ((document.body && document.body.innerText) || "").slice(0, 4000),
+            logs: logs,
+            errors: errs
+          };
           break;
         }
         case "get_page_errors": {

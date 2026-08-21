@@ -197,6 +197,8 @@ export type ToolName =
   | "get_network_errors"
   | "take_screenshot"
   | "run_javascript"
+  | "browser_execute_js"
+  | "browser_read_page"
   | "run_test"
   | "terminal_exec"
   | "terminal_reset"
@@ -233,6 +235,8 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   get_network_errors: "Get network errors",
   take_screenshot: "Take screenshot",
   run_javascript: "Run JavaScript",
+  browser_execute_js: "Execute JS",
+  browser_read_page: "Read page",
   run_test: "Run test",
   terminal_exec: "Terminal exec",
   terminal_reset: "Terminal reset",

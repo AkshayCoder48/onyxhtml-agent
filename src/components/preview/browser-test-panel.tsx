@@ -25,10 +25,14 @@ const BROWSER_TOOLS = new Set([
   "get_network_errors",
   "take_screenshot",
   "run_javascript",
+  "browser_execute_js",
+  "browser_read_page",
   "run_test",
   "terminal_exec",
   "terminal_reset",
   "check_links",
+  "check_page",
+  "check_console",
   "open_page",
   "reload_page",
 ]);
@@ -154,7 +158,12 @@ function summarizeArgs(tool: string, args: Record<string, unknown> | undefined):
     case "press_key":
       return String(a.key ?? "");
     case "run_javascript":
+    case "browser_execute_js":
       return String(a.code ?? "").split("\n")[0].slice(0, 60);
+    case "browser_read_page":
+    case "check_page":
+    case "check_console":
+      return "observe page";
     case "run_test":
       return typeof a.name === "string" && a.name.length > 0 ? a.name : Array.isArray(a.assertions) ? `${a.assertions.length} assertions` : "";
     case "open_page":
