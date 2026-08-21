@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, MoreHorizontal, MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
+import { Sparkles, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, Bot, Cpu, Zap, Activity, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -24,6 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useProviders } from "@/hooks/use-providers";
@@ -36,6 +37,7 @@ import { AgentStatusBar } from "./agent-status-bar";
 import { ChatPromptBox } from "./prompt-box";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import type { BridgeExecute } from "@/hooks/use-preview-bridge";
+import { useUIStore } from "@/stores/ui-store";
 
 export function ChatPanel({
   bridgeExecute,
@@ -49,6 +51,7 @@ export function ChatPanel({
   const isStreaming = useChatStore((s) => s.isStreaming);
   const clearMessages = useChatStore((s) => s.clearMessages);
   const queryClient = useQueryClient();
+  const openSettings = useUIStore((s) => s.openSettings);
 
   const [renameOpen, setRenameOpen] = React.useState(false);
   const [renameValue, setRenameValue] = React.useState("");
@@ -57,7 +60,6 @@ export function ChatPanel({
   const activeProvider = useProviderStore((s) => s.activeProvider);
   const usable = isProviderUsable(activeProvider);
 
-  // Load chats for this workspace; pick the most recent if none is active.
   const chatsQuery = useQuery({
     queryKey: ["chats", wsId],
     queryFn: async () => (wsId ? (await api.listChats(wsId)).chats : []),
@@ -74,20 +76,16 @@ export function ChatPanel({
       const latest = chatsQuery.data[0];
       setChatId(latest.id);
     } else if (chatsQuery.data && chatsQuery.data.length === 0 && !chatsQuery.isFetching) {
-      // Create a default chat
       api
         .createChat(wsId, { title: "New Chat" })
         .then((c) => {
           setChatId(c.chat.id);
           queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
         })
-        .catch(() => {
-          // ignore
-        });
+        .catch(() => {});
     }
   }, [wsId, chatId, chatsQuery.data, chatsQuery.isFetching, setChatId, queryClient]);
 
-  // Load messages when chatId changes
   const messagesQuery = useQuery({
     queryKey: ["chat", chatId],
     queryFn: async () => (chatId ? await api.getChat(chatId) : null),
@@ -100,7 +98,6 @@ export function ChatPanel({
     }
   }, [messagesQuery.data, setMessages]);
 
-  // Wire up the chat stream
   const stream = useChatStream({ execute: bridgeExecute ?? (async () => ({ error: "No preview" })) });
 
   async function handleNewChat() {
@@ -112,9 +109,7 @@ export function ChatPanel({
       await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
       toast.success("New chat started");
     } catch (e) {
-      toast.error("Failed to create chat", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Failed to create chat", { description: e instanceof Error ? e.message : undefined });
     }
   }
 
@@ -138,9 +133,7 @@ export function ChatPanel({
       await queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
       toast.success("Chat renamed");
     } catch (e) {
-      toast.error("Rename failed", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Rename failed", { description: e instanceof Error ? e.message : undefined });
     } finally {
       setRenameOpen(false);
     }
@@ -156,9 +149,7 @@ export function ChatPanel({
       await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
       toast.success("Chat deleted");
     } catch (e) {
-      toast.error("Delete failed", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("Delete failed", { description: e instanceof Error ? e.message : undefined });
     }
   }
 
@@ -167,24 +158,24 @@ export function ChatPanel({
       <ChatHeader
         title="AI Assistant"
         subtitle={usable ? activeModelLabel(activeProvider) : "Not configured"}
+        model={activeProvider?.model}
+        providerName={activeProvider?.name}
+        usable={usable}
         onNewChat={handleNewChat}
         onRename={handleRename}
         onDelete={handleDelete}
+        onOpenSettings={() => openSettings("providers")}
       />
       <ChatMessages />
       {isStreaming && (
-        <div className="shrink-0 border-t px-3 py-2">
+        <div className="shrink-0 border-t bg-muted/20 px-3 py-2">
           <AgentStatusBar />
         </div>
       )}
-      <ChatPromptBox
-        onSend={(t) => void stream.sendMessage(t)}
-        onStop={stream.stop}
-        isStreaming={isStreaming}
-      />
+      <ChatPromptBox onSend={(t) => void stream.sendMessage(t)} onStop={stream.stop} isStreaming={isStreaming} />
 
       <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm rounded-2xl">
           <DialogHeader>
             <DialogTitle>Rename chat</DialogTitle>
           </DialogHeader>
@@ -196,12 +187,15 @@ export function ChatPanel({
               if (e.key === "Enter") commitRename();
               if (e.key === "Escape") setRenameOpen(false);
             }}
+            className="rounded-xl"
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameOpen(false)}>
+            <Button variant="outline" className="rounded-full" onClick={() => setRenameOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={commitRename}>Save</Button>
+            <Button className="rounded-full" onClick={commitRename}>
+              Save
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -212,32 +206,64 @@ export function ChatPanel({
 function ChatHeader({
   title,
   subtitle,
+  model,
+  providerName,
+  usable,
   onNewChat,
   onRename,
   onDelete,
+  onOpenSettings,
 }: {
   title: string;
   subtitle: string;
+  model?: string;
+  providerName?: string;
+  usable: boolean;
   onNewChat: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onOpenSettings: () => void;
 }) {
   return (
-    <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b bg-background px-3">
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent-strong/10 text-accent-strong">
-          <Sparkles className="size-4" />
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-card/50 px-3 backdrop-blur">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-blue-600 text-white shadow-md">
+          <Bot className="size-5" />
         </div>
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{title}</div>
-          <div className="truncate text-[11px] text-muted-foreground">{subtitle}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-[13px] font-semibold">{title}</span>
+            <Badge variant={usable ? "default" : "secondary"} className={usable ? "h-4 rounded-full bg-emerald-500 px-1.5 text-[10px] text-white" : "h-4 rounded-full text-[10px]"}>
+              <Activity className="mr-1 size-2.5" /> {usable ? "Live" : "Setup"}
+            </Badge>
+          </div>
+          <div className="flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+            {providerName && <span className="truncate font-medium">{providerName}</span>}
+            {model && (
+              <>
+                <span>•</span>
+                <span className="truncate font-mono">{model}</span>
+              </>
+            )}
+            {!usable && <span className="text-amber-600">Configure AI provider</span>}
+          </div>
         </div>
       </div>
-      <div className="flex items-center gap-0.5">
-        <TooltipProvider delayDuration={300}>
+      <div className="flex items-center gap-1">
+        <TooltipProvider delayDuration={200}>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-8" onClick={onNewChat} aria-label="New chat">
+              <Button variant="ghost" size="icon" className="size-8 rounded-full" onClick={onOpenSettings} aria-label="AI settings">
+                <Settings className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>AI settings</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <TooltipProvider delayDuration={200}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-8 rounded-full" onClick={onNewChat} aria-label="New chat">
                 <MessageSquarePlus className="size-4" />
               </Button>
             </TooltipTrigger>
@@ -246,19 +272,16 @@ function ChatHeader({
         </TooltipProvider>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="size-8" aria-label="More">
+            <Button variant="ghost" size="icon" className="size-8 rounded-full" aria-label="More">
               <MoreHorizontal className="size-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onRename}>
+          <DropdownMenuContent align="end" className="rounded-xl">
+            <DropdownMenuItem onSelect={onRename} className="gap-2">
               <Pencil className="size-4" /> Rename
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onSelect={onDelete}
-              className="text-destructive focus:text-destructive"
-            >
+            <DropdownMenuItem onSelect={onDelete} className="gap-2 text-destructive focus:text-destructive">
               <Trash2 className="size-4" /> Delete
             </DropdownMenuItem>
           </DropdownMenuContent>

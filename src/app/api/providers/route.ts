@@ -15,6 +15,7 @@ export async function GET() {
 }
 
 // POST /api/providers — create a provider
+// Supports OpenAI-compatible: baseURL required, apiKey optional, model required
 export async function POST(req: NextRequest) {
   await seedBuiltInProviderIfNeeded();
   let body: any;
@@ -24,13 +25,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim() : "Provider";
-  const baseURL = typeof body?.baseURL === "string" ? body.baseURL.trim() : "";
+  const baseURLRaw = typeof body?.baseURL === "string" ? body.baseURL.trim() : "";
+  const baseURL = baseURLRaw.replace(/\/+$/, "");
   const model = typeof body?.model === "string" && body.model.trim() ? body.model.trim() : "";
-  const apiKey = typeof body?.apiKey === "string" && body.apiKey.length > 0 ? body.apiKey : null;
-  const isActive = Boolean(body?.isActive);
+  const apiKey = typeof body?.apiKey === "string" && body.apiKey.trim().length > 0 ? body.apiKey.trim() : null;
+  const isActive = body?.isActive !== undefined ? Boolean(body?.isActive) : true;
 
-  if (!baseURL) return NextResponse.json({ error: "baseURL is required" }, { status: 400 });
-  if (!model) return NextResponse.json({ error: "model is required" }, { status: 400 });
+  if (!baseURL) return NextResponse.json({ error: "baseURL is required — e.g. https://api.openai.com/v1" }, { status: 400 });
+  if (!model) return NextResponse.json({ error: "model is required — e.g. gpt-4o" }, { status: 400 });
+
+  try {
+    // Validate URL format
+    new URL(baseURL);
+  } catch {
+    return NextResponse.json({ error: "Invalid baseURL — must be a valid URL like https://api.openai.com/v1" }, { status: 400 });
+  }
 
   await db.$transaction(async (tx) => {
     if (isActive) {
