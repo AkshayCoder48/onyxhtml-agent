@@ -13,6 +13,7 @@ import { CommandPalette } from "@/components/workspace/command-palette";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { useSettings } from "@/hooks/use-settings";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useWorkspaceBootstrap } from "@/hooks/use-workspace-bootstrap";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -26,6 +27,9 @@ export default function Page() {
 
   // Apply settings (theme etc.)
   useSettings();
+
+  // Load workspace files + chat into stores whenever the selected workspace changes.
+  useWorkspaceBootstrap();
 
   // Keyboard shortcuts (registered globally)
   useKeyboardShortcuts([

@@ -1,10 +1,13 @@
 import { db } from "@/lib/db";
 import { Provider as ProviderType } from "@/lib/types";
+import {
+  ZAI_BUILT_IN_BASEURL,
+  ZAI_BUILT_IN_NAME,
+  ZAI_BUILT_IN_MODEL,
+} from "./provider-constants";
 
-// Convention: built-in Z.ai provider has baseURL === ZAI_BUILT_IN_BASEURL
-export const ZAI_BUILT_IN_BASEURL = "zai-built-in";
-export const ZAI_BUILT_IN_NAME = "Z.ai (Built-in)";
-export const ZAI_BUILT_IN_MODEL = "glm-4.6";
+// Re-export constants for existing imports.
+export { ZAI_BUILT_IN_BASEURL, ZAI_BUILT_IN_NAME, ZAI_BUILT_IN_MODEL };
 
 export type DBProvider = {
   id: string;
@@ -34,33 +37,27 @@ export function toProviderDTO(p: DBProvider): ProviderType {
   };
 }
 
-// Seed the built-in Z.ai provider if no provider exists. Idempotent.
-export async function seedBuiltInProviderIfNeeded(): Promise<void> {
-  const count = await db.provider.count();
-  if (count > 0) return;
-  await db.provider.create({
-    data: {
-      name: ZAI_BUILT_IN_NAME,
-      baseURL: ZAI_BUILT_IN_BASEURL,
-      apiKey: null,
-      model: ZAI_BUILT_IN_MODEL,
-      isActive: true,
-    },
-  });
-}
-
-// Get the currently-active provider, seeding the built-in if needed.
+// No built-in provider is seeded by default — the user configures their own
+// AI provider in Settings. Returns the active row (or the first provider if
+// none is flagged active).
 export async function getActiveProvider(): Promise<DBProvider | null> {
-  await seedBuiltInProviderIfNeeded();
   let p = await db.provider.findFirst({ where: { isActive: true } });
   if (!p) {
-    // Fall back to the built-in if nothing is active
-    p = await db.provider.findFirst({ where: { baseURL: ZAI_BUILT_IN_BASEURL } });
-    if (p) {
-      await db.provider.update({ where: { id: p.id }, data: { isActive: true } });
-    }
+    p = await db.provider.findFirst({ orderBy: { createdAt: "asc" } });
   }
-  return p ?? null;
+  return (p as DBProvider) ?? null;
+}
+
+// Select the active provider from an already-loaded list of plain rows (used
+// by the Web Worker, which cannot access localStorage / db).
+export function getActiveProviderFromRows(
+  rows: DBProvider[]
+): DBProvider | null {
+  if (!rows || rows.length === 0) return null;
+  const active = rows.find((r) => r.isActive);
+  if (active) return active;
+  const builtin = rows.find((r) => r.baseURL === ZAI_BUILT_IN_BASEURL);
+  return builtin ?? rows[0] ?? null;
 }
 
 // ---------- Conversation types (OpenAI chat format) ----------
@@ -79,7 +76,6 @@ export type ToolCallRef = {
 
 // ---------- Provider streaming ----------
 
-// Normalized events yielded by streamChatCompletion
 export type ProviderEvent =
   | { type: "reasoning_content"; content: string }
   | { type: "content"; content: string }
@@ -102,7 +98,6 @@ export type StreamArgs = {
   maxTokens?: number;
 };
 
-// Parse an SSE byte stream into discrete `data:` payloads.
 async function* parseSSEStream(
   stream: ReadableStream<Uint8Array> | null
 ): AsyncGenerator<string, void, unknown> {
@@ -119,17 +114,15 @@ async function* parseSSEStream(
       while ((idx = buffer.indexOf("\n")) >= 0) {
         let line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
-        // Strip trailing \r
         if (line.endsWith("\r")) line = line.slice(0, -1);
         if (!line.trim()) continue;
-        if (line.startsWith(":")) continue; // comment/heartbeat
+        if (line.startsWith(":")) continue;
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (data === "[DONE]") return;
         yield data;
       }
     }
-    // Flush any trailing data
     const tail = buffer.trim();
     if (tail.startsWith("data:")) {
       const data = tail.slice(5).trim();
@@ -139,7 +132,7 @@ async function* parseSSEStream(
     try {
       reader.releaseLock();
     } catch {
-      // noop
+      /* noop */
     }
   }
 }
@@ -155,8 +148,10 @@ function extractDelta(choice: any): {
   if (typeof delta.content === "string" && delta.content.length > 0) {
     out.content = delta.content;
   }
-  // Reasoning: support reasoning_content (Z.ai / Qwen) and reasoning (DeepSeek-style)
-  if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+  if (
+    typeof delta.reasoning_content === "string" &&
+    delta.reasoning_content.length > 0
+  ) {
     out.reasoning = delta.reasoning_content;
   } else if (typeof delta.reasoning === "string" && delta.reasoning.length > 0) {
     out.reasoning = delta.reasoning;
@@ -171,14 +166,7 @@ async function* yieldEventsFromSSE(
   stream: ReadableStream<Uint8Array> | null
 ): AsyncGenerator<ProviderEvent, void, unknown> {
   let finishEmitted = false;
-  // Per-call suffix so fallback callIds (when the provider omits ids) are
-  // unique across agentic rounds — prevents duplicate React keys / segments.
   const callSuffix = Math.random().toString(36).slice(2, 8);
-  // Track the SDK-provided id for each tool-call index so we can re-use it
-  // on every subsequent delta chunk. Without this, the first chunk (which
-  // carries the SDK id) and later chunks (which usually omit it) would be
-  // treated as different tool calls — causing the arguments to never
-  // accumulate and tools to be invoked with empty args ("Invalid path").
   const idByIndex = new Map<number, string>();
   for await (const data of parseSSEStream(stream)) {
     let parsed: any;
@@ -200,13 +188,12 @@ async function* yieldEventsFromSSE(
     if (choices.length === 0) continue;
     for (const choice of choices) {
       const d = extractDelta(choice);
-      if (d.reasoning) yield { type: "reasoning_content", content: d.reasoning };
+      if (d.reasoning)
+        yield { type: "reasoning_content", content: d.reasoning };
       if (d.content) yield { type: "content", content: d.content };
       if (d.toolCalls) {
         for (const tc of d.toolCalls) {
           const idx = typeof tc.index === "number" ? tc.index : 0;
-          // Resolve the id: prefer SDK-provided id, fall back to a stable
-          // index-based id (same across all chunks for this index).
           let id: string;
           if (typeof tc.id === "string" && tc.id) {
             idByIndex.set(idx, tc.id);
@@ -218,7 +205,8 @@ async function* yieldEventsFromSSE(
           }
           const fn = tc.function ?? {};
           const name = typeof fn.name === "string" ? fn.name : undefined;
-          const argsDelta = typeof fn.arguments === "string" ? fn.arguments : undefined;
+          const argsDelta =
+            typeof fn.arguments === "string" ? fn.arguments : undefined;
           yield {
             type: "tool_call_delta",
             callId: id,
@@ -235,124 +223,16 @@ async function* yieldEventsFromSSE(
       }
     }
   }
-  if (!finishEmitted) {
-    yield { type: "finish" };
-  }
+  if (!finishEmitted) yield { type: "finish" };
 }
 
-// Main entry: stream a chat completion from the active provider.
-export async function* streamChatCompletion(
+// Build the request body and return fetch() init. The caller (worker or
+// main thread) performs the actual fetch so CORS / proxying is handled in
+// one place.
+export function buildChatRequest(
   provider: DBProvider,
   args: StreamArgs
-): AsyncGenerator<ProviderEvent, void, unknown> {
-  if (isBuiltInProvider(provider)) {
-    yield* streamBuiltInZai(args);
-    return;
-  }
-  yield* streamOpenAICompatible(provider, args);
-}
-
-// Built-in Z.ai provider via z-ai-web-dev-sdk
-async function* streamBuiltInZai(
-  args: StreamArgs
-): AsyncGenerator<ProviderEvent, void, unknown> {
-  let ZAIModule: any;
-  try {
-    ZAIModule = await import("z-ai-web-dev-sdk");
-  } catch (e) {
-    yield {
-      type: "error",
-      content: `Built-in Z.ai SDK unavailable: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    };
-    return;
-  }
-  const ZAI = ZAIModule.default ?? ZAIModule;
-  let zai: any;
-  try {
-    zai = await ZAI.create();
-  } catch (e) {
-    yield {
-      type: "error",
-      content: `Failed to initialize Z.ai SDK: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
-    };
-    return;
-  }
-
-  const body: any = {
-    model: ZAI_BUILT_IN_MODEL,
-    messages: args.messages,
-    stream: true,
-    thinking: { type: "enabled" },
-    // GLM-4.6 supports up to 16K output tokens. Without an explicit cap, the
-    // provider applies a much smaller default (often 4K), which causes the
-    // AI to stop mid-response after ~10-15K characters — exactly the
-    // "ai auto stops" symptom. We request the maximum so long generations
-    // complete fully.
-    max_tokens: args.maxTokens ?? 16384,
-  };
-  if (args.tools && args.tools.length > 0) {
-    body.tools = args.tools;
-    body.tool_choice = "auto";
-  }
-  if (typeof args.temperature === "number") body.temperature = args.temperature;
-
-  let result: any;
-  try {
-    result = await zai.chat.completions.create(body);
-  } catch (e) {
-    yield {
-      type: "error",
-      content: `Z.ai request failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
-    return;
-  }
-
-  // The SDK returns a ReadableStream when stream:true
-  if (result && typeof result.getReader === "function") {
-    yield* yieldEventsFromSSE(result);
-    return;
-  }
-  // Fallback: non-streaming JSON response
-  if (result && Array.isArray(result.choices)) {
-    const choice = result.choices[0] ?? {};
-    const msg = choice.message ?? {};
-    const callSuffix = Math.random().toString(36).slice(2, 8);
-    if (typeof msg.reasoning_content === "string" && msg.reasoning_content) {
-      yield { type: "reasoning_content", content: msg.reasoning_content };
-    }
-    if (typeof msg.content === "string" && msg.content) {
-      yield { type: "content", content: msg.content };
-    }
-    if (Array.isArray(msg.tool_calls)) {
-      for (let i = 0; i < msg.tool_calls.length; i++) {
-        const tc = msg.tool_calls[i];
-        const id = typeof tc.id === "string" && tc.id ? tc.id : `call_${i}_${callSuffix}`;
-        const fn = tc.function ?? {};
-        yield {
-          type: "tool_call_delta",
-          callId: id,
-          id,
-          name: typeof fn.name === "string" ? fn.name : undefined,
-          argumentsDelta: typeof fn.arguments === "string" ? fn.arguments : undefined,
-          index: i,
-        };
-      }
-    }
-    yield { type: "finish" };
-    return;
-  }
-  yield { type: "error", content: "Unexpected Z.ai SDK response shape" };
-}
-
-// OpenAI-compatible provider via fetch
-async function* streamOpenAICompatible(
-  provider: DBProvider,
-  args: StreamArgs
-): AsyncGenerator<ProviderEvent, void, unknown> {
+): { url: string; init: RequestInit } {
   const base = provider.baseURL.replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
   const headers: Record<string, string> = {
@@ -361,14 +241,10 @@ async function* streamOpenAICompatible(
   if (provider.apiKey && provider.apiKey.length > 0) {
     headers["Authorization"] = `Bearer ${provider.apiKey}`;
   }
-
   const body: any = {
     model: provider.model,
     messages: args.messages,
     stream: true,
-    // Raise the output cap so long generations aren't truncated. Many
-    // OpenAI-compatible providers default to 4K tokens, which is too short
-    // for agentic work with tool calls + reasoning.
     max_tokens: args.maxTokens ?? 16384,
   };
   if (args.tools && args.tools.length > 0) {
@@ -376,19 +252,67 @@ async function* streamOpenAICompatible(
     body.tool_choice = "auto";
   }
   if (typeof args.temperature === "number") body.temperature = args.temperature;
+  return { url, init: { method: "POST", headers, body: JSON.stringify(body) } };
+}
+
+// When running in the browser we route custom-provider fetches through the
+// /api/proxy endpoint to avoid CORS errors. The Web Worker has access to
+// fetch and uses the same logic.
+async function doFetch(
+  url: string,
+  init: RequestInit
+): Promise<Response> {
+  if (typeof self !== "undefined" && (self as any).WorkerGlobalScope && (self as any).location) {
+    // In a worker: still go through the origin's proxy route for non-absolute
+    // same-origin relative URLs; external https URLs are fetched directly but
+    // may be blocked by CORS — the proxy would handle that, but workers can
+    // also POST to /api/proxy.
+    if (/^https?:\/\//.test(url)) {
+      const proxyResp = await fetch("/api/proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          body: init.body ? JSON.parse(init.body as string) : undefined,
+          headers: (init.headers as Record<string, string>) ?? {},
+        }),
+      });
+      return proxyResp;
+    }
+    return fetch(url, init);
+  }
+  // Browser main thread
+  if (/^https?:\/\//.test(url)) {
+    return fetch("/api/proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        body: init.body ? JSON.parse(init.body as string) : undefined,
+        headers: (init.headers as Record<string, string>) ?? {},
+      }),
+    });
+  }
+  return fetch(url, init);
+}
+
+// Main entry: stream a chat completion from the configured provider.
+// Uses standard OpenAI-compatible SSE over fetch.
+export async function* streamChatCompletion(
+  provider: DBProvider,
+  args: StreamArgs
+): AsyncGenerator<ProviderEvent, void, unknown> {
+  const { url, init } = buildChatRequest(provider, args);
 
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: args.signal ?? undefined,
-    });
+    response = await doFetch(url, init);
   } catch (e) {
     yield {
       type: "error",
-      content: `Provider request failed: ${e instanceof Error ? e.message : String(e)}`,
+      content: `Provider request failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
     };
     return;
   }
@@ -398,7 +322,7 @@ async function* streamOpenAICompatible(
     try {
       errText = await response.text();
     } catch {
-      // noop
+      /* noop */
     }
     let msg = `Provider returned HTTP ${response.status}`;
     try {
@@ -418,105 +342,65 @@ async function* streamOpenAICompatible(
     return;
   }
 
-  yield* yieldEventsFromSSE(response.body as unknown as ReadableStream<Uint8Array>);
+  yield* yieldEventsFromSSE(
+    response.body as unknown as ReadableStream<Uint8Array>
+  );
 }
 
-// ---------- Non-streaming helpers (for /providers/[id]/test) ----------
+// ---------- Non-streaming helpers (Settings → test connection) ----------
 
-export async function testProviderConnection(
-  provider: DBProvider
-): Promise<{ ok: boolean; model?: string; error?: string; status?: number }> {
+export async function testProviderConnection(provider: DBProvider): Promise<{
+  ok: boolean;
+  model?: string;
+  error?: string;
+  status?: number;
+}> {
   try {
-    if (isBuiltInProvider(provider)) {
-      let ZAIModule: any;
-      try {
-        ZAIModule = await import("z-ai-web-dev-sdk");
-      } catch (e) {
-        return {
-          ok: false,
-          error: `SDK unavailable: ${e instanceof Error ? e.message : String(e)}`,
-        };
-      }
-      const ZAI = ZAIModule.default ?? ZAIModule;
-      const zai = await ZAI.create();
-      const result: any = await zai.chat.completions.create({
-        model: ZAI_BUILT_IN_MODEL,
-        messages: [{ role: "user", content: "ping" }],
-      });
-      // If non-streaming JSON returned
-      if (result && Array.isArray(result.choices)) {
-        return { ok: true, model: ZAI_BUILT_IN_MODEL };
-      }
-      // If streaming body returned, drain it briefly
-      if (result && typeof result.getReader === "function") {
-        const reader = result.getReader();
-        await reader.read();
-        try {
-          reader.releaseLock();
-        } catch {}
-        return { ok: true, model: ZAI_BUILT_IN_MODEL };
-      }
-      return { ok: true, model: ZAI_BUILT_IN_MODEL };
-    }
-
-    const base = provider.baseURL.replace(/\/+$/, "");
-    const url = `${base}/chat/completions`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (provider.apiKey && provider.apiKey.length > 0) {
-      headers["Authorization"] = `Bearer ${provider.apiKey}`;
-    }
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: provider.model,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
-      }),
+    const { url, init } = buildChatRequest(provider, {
+      messages: [{ role: "user", content: "ping" }],
+      maxTokens: 1,
     });
+    const response = await doFetch(url, init);
     if (!response.ok) {
       const txt = await response.text().catch(() => "");
       return {
         ok: false,
         status: response.status,
-        error: `HTTP ${response.status}${txt ? `: ${txt.slice(0, 300)}` : ""}`,
+        error: `HTTP ${response.status}${
+          txt ? `: ${txt.slice(0, 300)}` : ""
+        }`,
       };
     }
     return { ok: true, model: provider.model };
   } catch (e) {
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : String(e),
-    };
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-// Fetch models list for a provider. Non-fatal — always returns `{ models: [] }` on error.
-export async function fetchProviderModels(provider: DBProvider): Promise<string[]> {
+// Fetch models list for a provider. Non-fatal — returns [] on error.
+export async function fetchProviderModels(
+  provider: DBProvider
+): Promise<string[]> {
   try {
-    if (isBuiltInProvider(provider)) {
-      // Return a sensible default list for the built-in GLM-4 family
-      return [
-        "glm-4.6",
-        "glm-4.5",
-        "glm-4.5-air",
-        "glm-4.5-flash",
-        "glm-4-plus",
-        "glm-4-air",
-        "glm-4-flash",
-        "glm-4-long",
-        "glm-4v-plus",
-        "glm-4v",
-        "glm-4v-flash",
-      ];
-    }
     const base = provider.baseURL.replace(/\/+$/, "");
     const url = `${base}/models`;
     const headers: Record<string, string> = {};
     if (provider.apiKey && provider.apiKey.length > 0) {
       headers["Authorization"] = `Bearer ${provider.apiKey}`;
     }
-    const response = await fetch(url, { method: "GET", headers });
+    let response: Response;
+    if (typeof window !== "undefined" || (self as any)?.WorkerGlobalScope) {
+      if (/^https?:\/\//.test(url)) {
+        response = await fetch("/api/proxy?" + new URLSearchParams({ url }), {
+          method: "GET",
+          headers,
+        });
+      } else {
+        response = await fetch(url, { method: "GET", headers });
+      }
+    } else {
+      response = await fetch(url, { method: "GET", headers });
+    }
     if (!response.ok) return [];
     const json = await response.json();
     const data = json?.data ?? json?.models ?? [];

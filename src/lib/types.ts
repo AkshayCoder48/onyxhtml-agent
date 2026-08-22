@@ -204,7 +204,28 @@ export type ToolName =
   | "terminal_reset"
   | "check_page"
   | "check_console"
-  | "check_links";
+  | "check_links"
+  // ---- Testing tools ----
+  | "run_unit_tests"
+  | "run_integration_tests"
+  | "run_e2e_test"
+  | "assert_text"
+  | "assert_element"
+  | "assert_url"
+  | "assert_title"
+  | "assert_attribute"
+  | "assert_visible"
+  | "assert_hidden"
+  | "assert_enabled"
+  | "assert_disabled"
+  | "assert_screenshot"
+  | "test_api_endpoint"
+  | "test_form"
+  | "test_navigation"
+  | "test_responsive_layout"
+  | "test_console"
+  | "test_network"
+  | "test_performance";
 
 export const TOOL_LABELS: Record<ToolName, string> = {
   list_files: "List files",
@@ -243,4 +264,24 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   check_page: "Check page",
   check_console: "Check console",
   check_links: "Check links",
+  run_unit_tests: "Run unit tests",
+  run_integration_tests: "Run integration tests",
+  run_e2e_test: "Run E2E test",
+  assert_text: "Assert text",
+  assert_element: "Assert element",
+  assert_url: "Assert URL",
+  assert_title: "Assert title",
+  assert_attribute: "Assert attribute",
+  assert_visible: "Assert visible",
+  assert_hidden: "Assert hidden",
+  assert_enabled: "Assert enabled",
+  assert_disabled: "Assert disabled",
+  assert_screenshot: "Assert screenshot",
+  test_api_endpoint: "Test API endpoint",
+  test_form: "Test form",
+  test_navigation: "Test navigation",
+  test_responsive_layout: "Test responsive layout",
+  test_console: "Test console",
+  test_network: "Test network",
+  test_performance: "Test performance",
 };

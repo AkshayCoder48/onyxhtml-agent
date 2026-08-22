@@ -42,6 +42,27 @@ const BROWSER_TOOLS: ToolName[] = [
   "check_page",
   "check_console",
   "check_links",
+  // ---- Testing tools (executed client-side in the preview iframe) ----
+  "run_unit_tests",
+  "run_integration_tests",
+  "run_e2e_test",
+  "assert_text",
+  "assert_element",
+  "assert_url",
+  "assert_title",
+  "assert_attribute",
+  "assert_visible",
+  "assert_hidden",
+  "assert_enabled",
+  "assert_disabled",
+  "assert_screenshot",
+  "test_api_endpoint",
+  "test_form",
+  "test_navigation",
+  "test_responsive_layout",
+  "test_console",
+  "test_network",
+  "test_performance",
 ];
 
 export function isBrowserTool(name: string): boolean {
@@ -576,6 +597,470 @@ export function getToolDefinitions(): ToolDefinition[] {
         parameters: { type: "object", properties: {}, required: [] },
       },
     },
+    // =========================================================
+    // Testing tools
+    // =========================================================
+    {
+      type: "function",
+      function: {
+        name: "assert_text",
+        description:
+          "Assert that the page contains (or does not contain) the given text. Returns { pass, message, actual? }. Use after an interaction to verify visible UI state.",
+        parameters: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "The text to look for." },
+            selector: {
+              type: "string",
+              description:
+                "Optional CSS selector to scope the search to a single element (e.g. 'h1', '.toast'). If omitted, searches the whole document body.",
+            },
+            contains: {
+              type: "boolean",
+              description:
+                "If true (default), pass when the text IS present. If false, pass when the text is ABSENT.",
+            },
+            caseSensitive: {
+              type: "boolean",
+              description: "Whether the match is case-sensitive. Default false.",
+            },
+          },
+          required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_element",
+        description:
+          "Assert that an element matching the CSS selector exists (or does not exist). Returns { pass, message, count }.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector to test." },
+            exists: {
+              type: "boolean",
+              description:
+                "If true (default), pass when at least one element matches. If false, pass when NO element matches.",
+            },
+            count: {
+              type: "number",
+              description:
+                "Optional exact number of matching elements expected. If provided, `exists` is ignored.",
+            },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_url",
+        description:
+          "Assert that the current page URL matches the expected value. Match can be 'exact', 'contains', 'prefix', 'suffix', or 'regex'. Returns { pass, message, actual }.",
+        parameters: {
+          type: "object",
+          properties: {
+            expected: { type: "string", description: "Expected URL or pattern." },
+            match: {
+              type: "string",
+              enum: ["exact", "contains", "prefix", "suffix", "regex"],
+              description: "How to compare. Default 'contains'.",
+            },
+          },
+          required: ["expected"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_title",
+        description:
+          "Assert that document.title matches the expected value. Supports exact/contains/regex matching.",
+        parameters: {
+          type: "object",
+          properties: {
+            expected: { type: "string", description: "Expected title or pattern." },
+            match: {
+              type: "string",
+              enum: ["exact", "contains", "regex"],
+              description: "Comparison mode. Default 'contains'.",
+            },
+          },
+          required: ["expected"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_attribute",
+        description:
+          "Assert that an element's attribute equals (or contains) an expected value. Returns { pass, message, actual }.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector." },
+            attribute: { type: "string", description: "Attribute name, e.g. 'href', 'aria-label', 'disabled'." },
+            expected: { type: "string", description: "Expected value." },
+            match: {
+              type: "string",
+              enum: ["exact", "contains", "exists", "regex"],
+              description:
+                "'exists' passes as long as the attribute is present (value ignored). Default 'exact'.",
+            },
+          },
+          required: ["selector", "attribute"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_visible",
+        description:
+          "Assert that the element matching the selector is visible (in the DOM, not display:none, not visibility:hidden, and has non-zero size).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_hidden",
+        description:
+          "Assert that the element matching the selector is hidden (not in DOM, display:none, visibility:hidden, or zero size).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_enabled",
+        description:
+          "Assert that the element (typically a button or input) is enabled (does not have the `disabled` property/attribute).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_disabled",
+        description:
+          "Assert that the element (typically a button or input) is disabled (has the `disabled` property/attribute).",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "assert_screenshot",
+        description:
+          "Capture a viewport screenshot (SVG + DOM snapshot) for visual verification. This is a non-throwing observation tool — it returns the dataUrl and a text DOM snapshot so you (or a human) can compare it. Pair with take_screenshot for before/after.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: {
+              type: "string",
+              description:
+                "Optional CSS selector; if provided, captures only that element's outerHTML in the snapshot.",
+            },
+            fullPage: {
+              type: "boolean",
+              description: "If true, include the full document height. Default false (viewport only).",
+            },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_api_endpoint",
+        description:
+          "Issue a fetch() from the preview context and return status, headers, and a parsed/stringified body. Use to test REST/JSON endpoints the page talks to. Relative URLs resolve against the preview origin.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "Absolute or relative URL." },
+            method: { type: "string", description: "HTTP method. Default 'GET'." },
+            headers: {
+              type: "object",
+              description: "Optional request headers as key/value pairs.",
+              additionalProperties: { type: "string" },
+            },
+            body: { type: "string", description: "Optional request body (string)." },
+            expectStatus: {
+              type: "number",
+              description: "If provided, the test fails when the response status does not equal this.",
+            },
+            expectJson: {
+              type: "boolean",
+              description: "If true, attempt to JSON-parse the response body and return it.",
+            },
+            timeoutMs: { type: "number", description: "Request timeout in ms (default 10000)." },
+          },
+          required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_form",
+        description:
+          "Programmatically fill a form's fields, optionally submit it, and return validation/submission results. Fields is an array of { selector, value }.",
+        parameters: {
+          type: "object",
+          properties: {
+            formSelector: { type: "string", description: "CSS selector for the <form>." },
+            fields: {
+              type: "array",
+              description: "Fields to fill.",
+              items: {
+                type: "object",
+                properties: {
+                  selector: { type: "string", description: "CSS selector for the input/textarea/select." },
+                  value: {
+                    description: "Value to set. For checkboxes use true/false; for <select> use the option value.",
+                  },
+                },
+                required: ["selector"],
+              },
+            },
+            submit: {
+              type: "boolean",
+              description: "If true (default), call form.requestSubmit() after filling. If false, only fill fields.",
+            },
+            waitMs: {
+              type: "number",
+              description: "Milliseconds to wait after submit before collecting state (default 300).",
+            },
+          },
+          required: ["formSelector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_navigation",
+        description:
+          "Click a link/button and verify the resulting URL/title. Returns before/after URL and title, plus whether the expected destination was reached.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector for the link/button to click." },
+            expectUrl: { type: "string", description: "Expected URL after click (substring match)." },
+            expectTitle: { type: "string", description: "Optional expected title after click (substring match)." },
+            waitMs: { type: "number", description: "Wait after click (default 500ms)." },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_responsive_layout",
+        description:
+          "Evaluate layout at multiple viewport sizes WITHOUT changing the real window. Uses a hidden iframe at each width to load the current page and reports overflow, horizontal scroll, and visible element counts. Returns one report per breakpoint.",
+        parameters: {
+          type: "object",
+          properties: {
+            widths: {
+              type: "array",
+              items: { type: "number" },
+              description: "Viewport widths in px to test. Default [390, 768, 1024, 1280].",
+            },
+            height: { type: "number", description: "Viewport height (default 800)." },
+            url: { type: "string", description: "Optional URL to load; defaults to current location.href." },
+            waitMs: { type: "number", description: "Per-size settle time in ms (default 400)." },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_console",
+        description:
+          "Assert the preview's captured console output. Filter by level (log/info/warn/error) and an optional substring/regex. Returns { pass, matching[], total }.",
+        parameters: {
+          type: "object",
+          properties: {
+            level: {
+              type: "string",
+              enum: ["error", "warn", "log", "info", "any"],
+              description: "Only consider messages at this level. Default 'error'.",
+            },
+            contains: { type: "string", description: "Only count messages whose text contains this substring." },
+            regex: { type: "string", description: "Only count messages matching this regex string." },
+            maxCount: {
+              type: "number",
+              description:
+                "If provided, pass only when the number of matching messages is <= this value (use 0 to assert no errors).",
+            },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_network",
+        description:
+          "Return the captured failed network requests (resource load errors + failed fetches). Optionally assert that no failures occurred, or that failures do not match a URL pattern.",
+        parameters: {
+          type: "object",
+          properties: {
+            expectNone: { type: "boolean", description: "If true, fail when ANY failed request exists." },
+            urlContains: {
+              type: "string",
+              description:
+                "If provided (along with expectNone), only failures whose URL contains this substring fail the assertion.",
+            },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "test_performance",
+        description:
+          "Collect browser performance metrics via the PerformanceObserver / Navigation Timing API: domContentLoaded, loadEventEnd, transferSize, number of long tasks (>50ms), and basic paint timings (first-paint, first-contentful-paint when available).",
+        parameters: {
+          type: "object",
+          properties: {
+            waitMs: {
+              type: "number",
+              description: "How long to observe long tasks before reading, in ms (default 1000).",
+            },
+            maxLoadMs: {
+              type: "number",
+              description: "If provided, fail if loadEventEnd > maxLoadMs.",
+            },
+            maxLongTasks: {
+              type: "number",
+              description: "If provided, fail if more than this many long tasks occurred.",
+            },
+          },
+          required: [],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "run_unit_tests",
+        description:
+          "Run an array of inline unit-test assertions. Each item is { name, code } where `code` is a JavaScript expression evaluated in the page. If an expression throws or returns false, the test fails; otherwise it passes. Returns a structured { passed, failed, total, results } report. Use this for pure-function / component-level checks.",
+        parameters: {
+          type: "object",
+          properties: {
+            tests: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  code: {
+                    type: "string",
+                    description:
+                      "JS expression. Return true/undefined for pass, throw or return false for fail.",
+                  },
+                },
+                required: ["name", "code"],
+              },
+            }
+          },
+          required: ["tests"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "run_integration_tests",
+        description:
+          "Run multi-step integration scenarios. Each step is { name, action, assert }. `action` is JS code executed first (e.g. click a button), then `assert` is a JS expression that must return true. Steps run in order with an optional wait between them. Returns pass/fail per step plus the overall result.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Optional suite name." },
+            steps: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  action: { type: "string", description: "JS code to run (statement(s)). May be async." },
+                  assert: {
+                    type: "string",
+                    description: "JS expression that must return a truthy value.",
+                  },
+                  waitMs: { type: "number", description: "Wait before the assert (default 100)." },
+                },
+                required: ["name"],
+              },
+            },
+          },
+          required: ["steps"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "run_e2e_test",
+        description:
+          "Run a complete end-to-end user-flow script. `script` is an async JavaScript function body (no `function` wrapper) executed in the page context; it can use `await`, click elements, fill forms, and call the global `assert(condition, message)` helper that throws on failure. Returns { pass, error?, steps[] } with each assertion's result.",
+        parameters: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "Optional flow name." },
+            script: {
+              type: "string",
+              description:
+                "Async function body. Use `await`, `document.querySelector(...)`, etc. Call `assert(cond, msg)` to record assertions. Return value is ignored.",
+            },
+            timeoutMs: { type: "number", description: "Overall timeout in ms (default 15000)." },
+          },
+          required: ["script"],
+        },
+      },
+    },
   ];
 }
 
@@ -650,6 +1135,44 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "console";
       case "check_links":
         return "links";
+      // ---- Testing tools ----
+      case "run_unit_tests":
+        return "unit tests";
+      case "run_integration_tests":
+        return "integration";
+      case "run_e2e_test":
+        return "e2e";
+      case "assert_text":
+        return String(args.text ?? "").slice(0, 60);
+      case "assert_element":
+        return String(args.selector ?? "");
+      case "assert_url":
+        return String(args.expected ?? "");
+      case "assert_title":
+        return String(args.expected ?? "");
+      case "assert_attribute":
+        return `${String(args.attribute ?? "")} of ${String(args.selector ?? "")}`;
+      case "assert_visible":
+      case "assert_hidden":
+      case "assert_enabled":
+      case "assert_disabled":
+        return String(args.selector ?? "");
+      case "assert_screenshot":
+        return "screenshot";
+      case "test_api_endpoint":
+        return `${String(args.method ?? "GET")} ${String(args.url ?? "")}`;
+      case "test_form":
+        return String(args.formSelector ?? "");
+      case "test_navigation":
+        return String(args.selector ?? "");
+      case "test_responsive_layout":
+        return "responsive";
+      case "test_console":
+        return String(args.level ?? "error");
+      case "test_network":
+        return "network";
+      case "test_performance":
+        return "performance";
       default:
         return "";
     }
