@@ -56,6 +56,8 @@ const BROWSER_TOOLS = new Set([
   "test_performance",
   "open_page",
   "reload_page",
+  "wait",
+  "run_qa_suite",
 ]);
 
 export function BrowserTestPanel() {

@@ -138,6 +138,12 @@ const BRIDGE_SCRIPT = `
     }
   } catch(e) { /* unsupported — ignore */ }
 
+  function announceReady(){ send({ kind: "ready", readyState: document.readyState }); }
+  announceReady();
+  if (document.readyState !== "complete") {
+    window.addEventListener("load", announceReady);
+  }
+
   function styleSummary(el) {
     try {
       var cs = window.getComputedStyle(el);
@@ -167,7 +173,7 @@ const BRIDGE_SCRIPT = `
     }
   }
 
-  window.addEventListener("message", function(ev) {
+  window.addEventListener("message", async function(ev) {
     var data = ev.data;
     if (!data || data.source !== "workspace-host") return;
     if (data.action !== "browser-tool") return;
@@ -1040,7 +1046,95 @@ const BRIDGE_SCRIPT = `
           break;
         }
         case "wait": {
-          result = { ok: true };
+          var waitMs = Math.max(0, Math.min(Number(args.ms || 0), 10000));
+          if (waitMs > 0) await new Promise(function(r){ setTimeout(r, waitMs); });
+          result = { ok: true, waited: waitMs };
+          break;
+        }
+        case "run_qa_suite": {
+          var qaChecks = [];
+          var pushCheck = function(id, pass, message){
+            qaChecks.push({ id: id, pass: !!pass, message: String(message) });
+          };
+          var qaBody = document.body;
+          var qaText = (qaBody && (qaBody.innerText != null ? qaBody.innerText : qaBody.textContent) || "").trim();
+          pushCheck("ready", document.readyState === "complete" || document.readyState === "interactive", "document.readyState=" + document.readyState);
+          pushCheck("has_body", !!qaBody, qaBody ? "body present" : "missing body");
+          pushCheck("has_content", qaText.length > 0, qaText.length > 0 ? ("visible text " + qaText.length + " chars") : "page has no visible text");
+          var qaTitle = document.title || "";
+          pushCheck("has_title", qaTitle.trim().length > 0, qaTitle ? ("title: " + qaTitle) : "missing document title");
+          var qaHeadings = document.querySelectorAll("h1,h2,h3").length;
+          pushCheck("has_heading", qaHeadings > 0, qaHeadings + " heading(s)");
+          var qaViewport = document.querySelector("meta[name=viewport]");
+          pushCheck("viewport_meta", !!qaViewport, qaViewport ? "viewport meta present" : "missing viewport meta");
+          pushCheck("no_page_errors", errs.length === 0, errs.length === 0 ? "no uncaught exceptions" : (errs.length + " page error(s)"));
+          var qaConsoleErrs = logs.filter(function(l){ return l.level === "error"; });
+          pushCheck("no_console_errors", qaConsoleErrs.length === 0, qaConsoleErrs.length === 0 ? "no console.error" : (qaConsoleErrs.length + " console error(s)"));
+          pushCheck("no_network_errors", networkErrors.length === 0, networkErrors.length === 0 ? "no failed resources" : (networkErrors.length + " failed resource(s)"));
+          var qaImgs = document.querySelectorAll("img");
+          var qaMissingAlt = 0;
+          for (var qai = 0; qai < qaImgs.length; qai++) {
+            if (!qaImgs[qai].hasAttribute("alt")) qaMissingAlt++;
+          }
+          pushCheck("images_alt", qaMissingAlt === 0, qaMissingAlt === 0 ? (qaImgs.length + " image(s) ok") : (qaMissingAlt + " image(s) missing alt"));
+          var qaUnlabeled = 0;
+          var qaControls = document.querySelectorAll("input, textarea, select");
+          for (var qac = 0; qac < qaControls.length; qac++) {
+            var qinp = qaControls[qac];
+            var qtype = String(qinp.type || "").toLowerCase();
+            if (qtype === "hidden" || qtype === "submit" || qtype === "button" || qtype === "image") continue;
+            var qid = qinp.id;
+            var qHasLabel = !!(qinp.getAttribute("aria-label") || qinp.getAttribute("aria-labelledby") || qinp.placeholder || (qid && document.querySelector("label[for='" + qid + "']")) || qinp.closest("label"));
+            if (!qHasLabel) qaUnlabeled++;
+          }
+          pushCheck("form_labels", qaUnlabeled === 0, qaUnlabeled === 0 ? "form controls labeled" : (qaUnlabeled + " unlabeled control(s)"));
+          var qaOverflow = false;
+          try { qaOverflow = document.documentElement.scrollWidth > window.innerWidth + 2; } catch (eQa) {}
+          pushCheck("no_h_overflow", !qaOverflow, qaOverflow ? "horizontal overflow" : "no horizontal overflow");
+          var qaSels = Array.isArray(args.requiredSelectors) ? args.requiredSelectors : [];
+          for (var qas = 0; qas < qaSels.length; qas++) {
+            var qsel = String(qaSels[qas]);
+            var qfound = !!document.querySelector(qsel);
+            pushCheck("selector:" + qsel, qfound, qfound ? ("found " + qsel) : ("missing " + qsel));
+          }
+          var qaNeedles = Array.isArray(args.requiredText) ? args.requiredText : [];
+          var qaHay = qaText.toLowerCase();
+          for (var qat = 0; qat < qaNeedles.length; qat++) {
+            var qneedle = String(qaNeedles[qat]);
+            var qhas = qaHay.indexOf(qneedle.toLowerCase()) >= 0;
+            pushCheck("text:" + qneedle, qhas, qhas ? ("found text " + qneedle) : ("missing text " + qneedle));
+          }
+          var qaFailed = qaChecks.filter(function(c){ return !c.pass; });
+          var qaPassed = qaChecks.filter(function(c){ return c.pass; });
+          var qaSuggestions = [];
+          for (var qaf = 0; qaf < qaFailed.length; qaf++) {
+            var qfail = qaFailed[qaf];
+            if (qfail.id === "has_title") qaSuggestions.push("Add a descriptive title in the document head.");
+            else if (qfail.id === "has_heading") qaSuggestions.push("Add at least one heading (h1-h3).");
+            else if (qfail.id === "viewport_meta") qaSuggestions.push("Add a viewport meta tag (width=device-width, initial-scale=1).");
+            else if (qfail.id === "no_page_errors" || qfail.id === "no_console_errors") qaSuggestions.push("Fix the JS error(s) listed in errors.");
+            else if (qfail.id === "no_network_errors") qaSuggestions.push("Fix broken script/link/img src paths.");
+            else if (qfail.id === "images_alt") qaSuggestions.push("Add alt attributes to images.");
+            else if (qfail.id === "form_labels") qaSuggestions.push("Associate a label or aria-label with each input.");
+            else if (qfail.id === "no_h_overflow") qaSuggestions.push("Fix horizontal overflow (fixed widths, large images).");
+            else if (qfail.id === "has_content") qaSuggestions.push("The page rendered empty — check HTML structure and CSS display.");
+            else qaSuggestions.push("Fix: " + qfail.message);
+          }
+          result = {
+            pass: qaFailed.length === 0,
+            score: qaChecks.length ? Math.round(100 * qaPassed.length / qaChecks.length) : 0,
+            passed: qaPassed.length,
+            failed: qaFailed.length,
+            total: qaChecks.length,
+            checks: qaChecks,
+            failedChecks: qaFailed,
+            errors: { page: errs.slice(-10), console: qaConsoleErrs.slice(-10), network: networkErrors.slice(-10) },
+            title: qaTitle,
+            url: window.location.href,
+            textPreview: qaText.slice(0, 500),
+            suggestions: qaSuggestions,
+            report: (qaFailed.length === 0 ? "PASS" : "FAIL") + " " + qaPassed.length + "/" + qaChecks.length + " checks." + (qaFailed.length ? " " + qaFailed.map(function(f){ return f.message; }).join("; ") : " All good.")
+          };
           break;
         }
         default:

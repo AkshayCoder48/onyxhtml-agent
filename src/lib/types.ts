@@ -225,7 +225,8 @@ export type ToolName =
   | "test_responsive_layout"
   | "test_console"
   | "test_network"
-  | "test_performance";
+  | "test_performance"
+  | "run_qa_suite";
 
 export const TOOL_LABELS: Record<ToolName, string> = {
   list_files: "List files",
@@ -284,4 +285,5 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   test_console: "Test console",
   test_network: "Test network",
   test_performance: "Test performance",
+  run_qa_suite: "QA suite",
 };
