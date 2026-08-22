@@ -123,6 +123,21 @@ const BRIDGE_SCRIPT = `
     }
   }, true);
 
+  // Track long tasks (>50ms) for the test_performance tool. Browsers that
+  // don't support PerformanceObserver simply report zero long tasks.
+  window.__longTasks = window.__longTasks || [];
+  try {
+    if (typeof PerformanceObserver !== "undefined") {
+      var po = new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var i = 0; i < entries.length; i++) {
+          window.__longTasks.push({ name: entries[i].name, duration: entries[i].duration, startTime: entries[i].startTime });
+        }
+      });
+      po.observe({ entryTypes: ["longtask"] });
+    }
+  } catch(e) { /* unsupported — ignore */ }
+
   function styleSummary(el) {
     try {
       var cs = window.getComputedStyle(el);
@@ -447,6 +462,387 @@ const BRIDGE_SCRIPT = `
           result = { errors: networkErrors };
           break;
         }
+
+        // =========================================================
+        // Testing tools
+        // =========================================================
+
+        case "assert_text": {
+          var text = String(args.text != null ? args.text : "");
+          var contains = args.contains !== false; // default true
+          var caseSensitive = args.caseSensitive === true;
+          var scope = args.selector ? document.querySelector(args.selector) : document.body;
+          if (!scope) throw new Error("Element not found: " + args.selector);
+          var hay = (scope.innerText != null ? scope.innerText : scope.textContent) || "";
+          if (!caseSensitive) { hay = hay.toLowerCase(); text = text.toLowerCase(); }
+          var has = hay.indexOf(text) >= 0;
+          var pass = contains ? has : !has;
+          result = {
+            pass: pass,
+            message: pass
+              ? ("PASS: expected text " + (contains ? "" : "not ") + "present")
+              : ("FAIL: expected text " + (contains ? "" : "not ") + "present: " + text.slice(0, 80)),
+            found: has,
+          };
+          break;
+        }
+        case "assert_element": {
+          var matches = document.querySelectorAll(args.selector);
+          var count = matches.length;
+          var pass;
+          if (typeof args.count === "number") {
+            pass = count === args.count;
+          } else {
+            var exists = args.exists !== false;
+            pass = exists ? count > 0 : count === 0;
+          }
+          result = {
+            pass: pass,
+            count: count,
+            message: pass
+              ? ("PASS: " + count + " element(s) matching " + args.selector)
+              : ("FAIL: " + count + " element(s) matching " + args.selector + " (expected " + (typeof args.count === "number" ? args.count : (args.exists === false ? "none" : "at least one")) + ")"),
+          };
+          break;
+        }
+        case "assert_url": {
+          var expected = String(args.expected != null ? args.expected : "");
+          var mode = args.match || "contains";
+          var actual = window.location.href;
+          var pass = false;
+          if (mode === "exact") pass = actual === expected;
+          else if (mode === "prefix") pass = actual.indexOf(expected) === 0;
+          else if (mode === "suffix") pass = actual.slice(-expected.length) === expected;
+          else if (mode === "regex") { try { pass = new RegExp(expected).test(actual); } catch(e){ throw new Error("Invalid regex: " + e.message); } }
+          else pass = actual.indexOf(expected) >= 0;
+          result = { pass: pass, actual: actual, expected: expected, message: pass ? "PASS" : ("FAIL: URL " + actual + " did not match " + expected) };
+          break;
+        }
+        case "assert_title": {
+          var expected = String(args.expected != null ? args.expected : "");
+          var mode = args.match || "contains";
+          var actual = document.title || "";
+          var pass = false;
+          if (mode === "exact") pass = actual === expected;
+          else if (mode === "regex") { try { pass = new RegExp(expected).test(actual); } catch(e){ throw new Error("Invalid regex"); } }
+          else pass = actual.toLowerCase().indexOf(expected.toLowerCase()) >= 0;
+          result = { pass: pass, actual: actual, message: pass ? "PASS" : ("FAIL: title '" + actual + "' did not match '" + expected + "'") };
+          break;
+        }
+        case "assert_attribute": {
+          var el = document.querySelector(args.selector);
+          if (!el) throw new Error("Element not found: " + args.selector);
+          var attr = String(args.attribute);
+          var has = el.hasAttribute(attr);
+          var actual = has ? el.getAttribute(attr) : null;
+          var mode = args.match || "exact";
+          var pass;
+          if (mode === "exists") pass = has;
+          else if (!has) pass = false;
+          else if (mode === "contains") pass = String(actual).indexOf(String(args.expected)) >= 0;
+          else if (mode === "regex") { try { pass = new RegExp(String(args.expected)).test(String(actual)); } catch(e){ pass = false; } }
+          else pass = actual === String(args.expected);
+          result = { pass: pass, attribute: attr, actual: actual, message: pass ? "PASS" : ("FAIL: " + attr + " was " + JSON.stringify(actual)) };
+          break;
+        }
+        case "assert_visible": {
+          var el = document.querySelector(args.selector);
+          if (!el) { result = { pass: false, message: "FAIL: element not found: " + args.selector }; break; }
+          var rect = el.getBoundingClientRect();
+          var cs = window.getComputedStyle(el);
+          var visible = !(cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") && rect.width > 0 && rect.height > 0;
+          result = { pass: visible, message: visible ? "PASS: element is visible" : "FAIL: element is not visible", rect: { w: rect.width, h: rect.height } };
+          break;
+        }
+        case "assert_hidden": {
+          var el = document.querySelector(args.selector);
+          if (!el) { result = { pass: true, message: "PASS: element is absent from DOM" }; break; }
+          var rect = el.getBoundingClientRect();
+          var cs = window.getComputedStyle(el);
+          var hidden = (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") || rect.width === 0 || rect.height === 0;
+          result = { pass: hidden, message: hidden ? "PASS: element is hidden" : "FAIL: element is still visible" };
+          break;
+        }
+        case "assert_enabled": {
+          var el = document.querySelector(args.selector);
+          if (!el) throw new Error("Element not found: " + args.selector);
+          var enabled = !el.disabled;
+          result = { pass: enabled, message: enabled ? "PASS: element is enabled" : "FAIL: element is disabled" };
+          break;
+        }
+        case "assert_disabled": {
+          var el = document.querySelector(args.selector);
+          if (!el) throw new Error("Element not found: " + args.selector);
+          var disabled = !!el.disabled;
+          result = { pass: disabled, message: disabled ? "PASS: element is disabled" : "FAIL: element is enabled" };
+          break;
+        }
+        case "assert_screenshot": {
+          var target = args.selector ? document.querySelector(args.selector) : document.documentElement;
+          var clone = target.cloneNode(true);
+          var scripts = clone.querySelectorAll ? clone.querySelectorAll("script") : [];
+          for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+          if (clone.setAttribute) clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+          var w = Math.min(window.innerWidth, 1280);
+          var h = args.fullPage ? Math.max(document.body ? document.body.scrollHeight : 0, window.innerHeight) : Math.min(window.innerHeight, 800);
+          var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '"><foreignObject width="100%" height="100%">' + (clone.outerHTML || "") + '</foreignObject></svg>';
+          result = { dataUrl: "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg), domSnapshot: (document.body ? document.body.outerHTML : "").slice(0, 8000), width: w, height: h, ok: true };
+          break;
+        }
+        case "test_api_endpoint": {
+          var url = String(args.url);
+          var method = String(args.method || "GET").toUpperCase();
+          var headers = args.headers || {};
+          var fetchOpts = { method: method, headers: headers };
+          if (args.body != null && method !== "GET" && method !== "HEAD") { fetchOpts.body = String(args.body); if (!fetchOpts.headers["Content-Type"]) fetchOpts.headers["Content-Type"] = "application/json"; }
+          var controller = new AbortController();
+          var timeoutId = setTimeout(function(){ controller.abort(); }, Number(args.timeoutMs || 10000));
+          fetchOpts.signal = controller.signal;
+          var res;
+          try {
+            res = await fetch(url, fetchOpts);
+          } finally {
+            clearTimeout(timeoutId);
+          }
+          var text = await res.text();
+          var bodyOut = text;
+          if (args.expectJson) {
+            try { bodyOut = JSON.parse(text); } catch(e) { /* keep text */ }
+          }
+          var pass = (typeof args.expectStatus !== "number") || (res.status === args.expectStatus);
+          result = {
+            pass: pass,
+            status: res.status,
+            ok: res.ok,
+            url: res.url || url,
+            headers: (function(){ var h = {}; res.headers.forEach(function(v,k){ h[k] = v; }); return h; })(),
+            body: bodyOut,
+            message: pass ? "PASS" : ("FAIL: expected status " + args.expectStatus + " got " + res.status),
+          };
+          break;
+        }
+        case "test_form": {
+          var form = document.querySelector(args.formSelector);
+          if (!form) throw new Error("Form not found: " + args.formSelector);
+          var fields = Array.isArray(args.fields) ? args.fields : [];
+          var fillLog = [];
+          for (var fi = 0; fi < fields.length; fi++) {
+            var f = fields[fi];
+            var input = form.querySelector(f.selector) || document.querySelector(f.selector);
+            if (!input) { fillLog.push({ selector: f.selector, ok: false, error: "not found" }); continue; }
+            if (f.value === true || f.value === false) {
+              if ("checked" in input) { input.checked = f.value; input.dispatchEvent(new Event("change", { bubbles: true })); }
+            } else if (input.tagName === "SELECT") {
+              input.value = String(f.value); input.dispatchEvent(new Event("change", { bubbles: true }));
+            } else {
+              input.focus();
+              input.value = String(f.value != null ? f.value : "");
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            fillLog.push({ selector: f.selector, ok: true });
+          }
+          var submitted = false;
+          if (args.submit !== false) {
+            if (typeof form.requestSubmit === "function") {
+              try { form.requestSubmit(); submitted = true; }
+              catch(e) { form.submit(); submitted = true; }
+            } else {
+              form.submit(); submitted = true;
+            }
+          }
+          if (Number(args.waitMs || 300) > 0) {
+            await new Promise(function(r){ setTimeout(r, Number(args.waitMs || 300)); });
+          }
+          result = { filled: fillLog, submitted: submitted, url: window.location.href, title: document.title };
+          break;
+        }
+        case "test_navigation": {
+          var el = document.querySelector(args.selector);
+          if (!el) throw new Error("Element not found: " + args.selector);
+          var before = { url: window.location.href, title: document.title };
+          el.click();
+          if (Number(args.waitMs || 500) > 0) {
+            await new Promise(function(r){ setTimeout(r, Number(args.waitMs || 500)); });
+          }
+          var after = { url: window.location.href, title: document.title };
+          var urlPass = !args.expectUrl || after.url.indexOf(args.expectUrl) >= 0;
+          var titlePass = !args.expectTitle || (after.title || "").toLowerCase().indexOf(String(args.expectTitle).toLowerCase()) >= 0;
+          result = { before: before, after: after, pass: urlPass && titlePass, urlPass: urlPass, titlePass: titlePass };
+          break;
+        }
+        case "test_responsive_layout": {
+          var widths = Array.isArray(args.widths) && args.widths.length > 0 ? args.widths : [390, 768, 1024, 1280];
+          var height = Number(args.height || 800);
+          var waitMs = Number(args.waitMs || 400);
+          var reports = [];
+          for (var wi = 0; wi < widths.length; wi++) {
+            var w = widths[wi];
+            // Use an iframe loaded with the current URL to test at a
+            // different viewport without disturbing the real window.
+            var report = await new Promise(function(resolve){
+              var iframe = document.createElement("iframe");
+              iframe.style.cssText = "position:fixed;left:-99999px;top:0;width:" + w + "px;height:" + height + "px;border:0;";
+              iframe.src = window.location.href;
+              iframe.onload = function(){
+                setTimeout(function(){
+                  try {
+                    var doc = iframe.contentDocument;
+                    var body = doc && doc.body;
+                    var de = doc && doc.documentElement;
+                    var scrollW = body ? Math.max(body.scrollWidth, de ? de.scrollWidth : 0, w) : w;
+                    var horizontalOverflow = scrollW > w + 2;
+                    var buttons = doc ? doc.querySelectorAll("button, a").length : 0;
+                    resolve({ width: w, height: height, horizontalOverflow: horizontalOverflow, scrollWidth: scrollW, interactiveCount: buttons });
+                  } catch(e) {
+                    resolve({ width: w, error: e.message });
+                  } finally {
+                    iframe.remove();
+                  }
+                }, waitMs);
+              };
+              iframe.onerror = function(){ resolve({ width: w, error: "iframe load failed" }); iframe.remove(); };
+              document.body.appendChild(iframe);
+            });
+            reports.push(report);
+          }
+          var anyOverflow = reports.some(function(r){ return r.horizontalOverflow; });
+          result = { pass: !anyOverflow, reports: reports, message: anyOverflow ? "FAIL: horizontal overflow at some widths" : "PASS" };
+          break;
+        }
+        case "test_console": {
+          var level = args.level || "error";
+          var messages = level === "any" ? logs : logs.filter(function(l){ return l.level === level; });
+          if (args.contains) {
+            var needle = String(args.contains).toLowerCase();
+            messages = messages.filter(function(l){ return (l.args || []).join(" ").toLowerCase().indexOf(needle) >= 0; });
+          } else if (args.regex) {
+            var re = new RegExp(args.regex);
+            messages = messages.filter(function(l){ return re.test((l.args || []).join(" ")); });
+          }
+          var count = messages.length;
+          var pass = (typeof args.maxCount !== "number") || count <= args.maxCount;
+          result = {
+            pass: pass,
+            level: level,
+            matching: messages.slice(-20),
+            total: count,
+            message: pass ? ("PASS: " + count + " matching message(s)") : ("FAIL: " + count + " matching messages (max " + args.maxCount + ")"),
+          };
+          break;
+        }
+        case "test_network": {
+          var failures = networkErrors.slice();
+          if (args.urlContains) {
+            var needle = String(args.urlContains);
+            failures = failures.filter(function(f){ return String(f.url || "").indexOf(needle) >= 0; });
+          }
+          var pass = !(args.expectNone && failures.length > 0);
+          result = { pass: pass, failures: failures, count: failures.length, message: pass ? "PASS" : ("FAIL: " + failures.length + " network failure(s)") };
+          break;
+        }
+        case "test_performance": {
+          var waitMs = Number(args.waitMs || 1000);
+          var longTasks = (window.__longTasks || []).slice();
+          await new Promise(function(r){ setTimeout(r, waitMs); });
+          longTasks = (window.__longTasks || []).slice();
+          var nav = performance.getEntriesByType && performance.getEntriesByType("navigation")[0];
+          var paints = {};
+          try {
+            var paintEntries = performance.getEntriesByType("paint");
+            for (var pi = 0; pi < paintEntries.length; pi++) {
+              paints[paintEntries[pi].name] = paintEntries[pi].startTime;
+            }
+          } catch(e) {}
+          var metrics = {
+            domContentLoaded: nav ? nav.domContentLoadedEventEnd : null,
+            loadEventEnd: nav ? nav.loadEventEnd : null,
+            transferSize: nav ? nav.transferSize : null,
+            firstPaint: paints["first-paint"] ?? null,
+            firstContentfulPaint: paints["first-contentful-paint"] ?? null,
+            longTaskCount: longTasks.length,
+            resources: performance.getEntriesByType ? performance.getEntriesByType("resource").length : 0,
+          };
+          var pass = true;
+          var failures = [];
+          if (typeof args.maxLoadMs === "number" && metrics.loadEventEnd != null && metrics.loadEventEnd > args.maxLoadMs) { pass = false; failures.push("loadEventEnd " + Math.round(metrics.loadEventEnd) + "ms > " + args.maxLoadMs + "ms"); }
+          if (typeof args.maxLongTasks === "number" && metrics.longTaskCount > args.maxLongTasks) { pass = false; failures.push(metrics.longTaskCount + " long tasks > " + args.maxLongTasks); }
+          result = { pass: pass, metrics: metrics, failures: failures, message: pass ? "PASS" : ("FAIL: " + failures.join("; ")) };
+          break;
+        }
+        case "run_unit_tests": {
+          var tests = Array.isArray(args.tests) ? args.tests : [];
+          var results = [];
+          var passed = 0;
+          for (var ti = 0; ti < tests.length; ti++) {
+            var t = tests[ti];
+            try {
+              // eslint-disable-next-line no-eval
+              var val = eval(String(t.code || ""));
+              var ok = (val === undefined) ? true : !!val;
+              if (ok) passed++;
+              results.push({ name: t.name, pass: ok, actual: (typeof val === "object" ? JSON.stringify(val) : String(val)) });
+            } catch(e) {
+              results.push({ name: t.name, pass: false, error: e && e.message ? e.message : String(e) });
+            }
+          }
+          result = { passed: passed, failed: results.length - passed, total: results.length, results: results, pass: passed === results.length };
+          break;
+        }
+        case "run_integration_tests": {
+          var steps = Array.isArray(args.steps) ? args.steps : [];
+          var stepResults = [];
+          var allPass = true;
+          for (var si = 0; si < steps.length; si++) {
+            var step = steps[si];
+            try {
+              if (step.action) {
+                // eslint-disable-next-line no-eval
+                var AsyncFn = Object.getPrototypeOf(async function(){}).constructor;
+                await new AsyncFn(String(step.action))();
+              }
+              if (Number(step.waitMs || 100) > 0) {
+                await new Promise(function(r){ setTimeout(r, Number(step.waitMs || 100)); });
+              }
+              var ok = true;
+              if (step.assert) {
+                // eslint-disable-next-line no-eval
+                ok = !!eval(String(step.assert));
+              }
+              if (!ok) allPass = false;
+              stepResults.push({ name: step.name, pass: ok });
+            } catch(e) {
+              allPass = false;
+              stepResults.push({ name: step.name, pass: false, error: e && e.message ? e.message : String(e) });
+            }
+          }
+          result = { name: args.name || "integration", pass: allPass, steps: stepResults, passed: stepResults.filter(function(s){ return s.pass; }).length, total: stepResults.length };
+          break;
+        }
+        case "run_e2e_test": {
+          var scriptText = String(args.script || "");
+          var e2eSteps = [];
+          var assertFn = function(cond, msg){
+            var pass = !!cond;
+            e2eSteps.push({ pass: pass, message: msg || (pass ? "assertion passed" : "assertion failed") });
+            if (!pass) throw new Error(msg || "Assertion failed");
+          };
+          try {
+            var AsyncFn2 = Object.getPrototypeOf(async function(){}).constructor;
+            var fn2 = new AsyncFn2("assert", "document", "window",
+              "return (async () => { " + scriptText + " })();"
+            );
+            var timer = new Promise(function(_, reject){
+              setTimeout(function(){ reject(new Error("E2E script timed out")); }, Number(args.timeoutMs || 15000));
+            });
+            await Promise.race([fn2(assertFn, document, window), timer]);
+            result = { pass: true, name: args.name || "e2e", steps: e2eSteps };
+          } catch(e) {
+            result = { pass: false, name: args.name || "e2e", steps: e2eSteps, error: e && e.message ? e.message : String(e) };
+          }
+          break;
+        }
+
         case "take_screenshot": {
           try {
             var body = document.body;

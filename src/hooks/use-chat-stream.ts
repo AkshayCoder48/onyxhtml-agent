@@ -2,7 +2,6 @@
 
 import * as React from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
 import { useChatStore } from "@/stores/chat-store";
 import { useToolStore } from "@/stores/tool-store";
 import { useFileStreamStore } from "@/stores/file-stream-store";
@@ -10,41 +9,21 @@ import { useBrowserStore } from "@/stores/browser-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import type { Message, MessageSegment } from "@/lib/types";
 import type { StreamEvent } from "@/lib/streaming/types";
-import { consumeReadableStream } from "@/lib/streaming/engine";
 import { EventDispatcher, type DispatcherHandlers } from "@/lib/streaming/dispatcher";
+import { useAgentWorker } from "@/hooks/use-agent-worker";
+import { db } from "@/lib/db";
+import { parseJSON, stringifyJSON } from "@/lib/settings";
+import { findEntryFile } from "@/lib/files";
+import { AGENT_MD_FILENAME } from "@/lib/agent-md";
+import type {
+  WorkerChatMessage,
+  WorkerFile,
+  WorkerProvider,
+} from "@/lib/ai/agent-runner";
 
 function uid(prefix = "m") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
-
-// Browser tools that must be executed against the preview iframe on the client.
-const BROWSER_TOOLS = new Set([
-  "click",
-  "type",
-  "press_key",
-  "scroll",
-  "hover",
-  "select",
-  "get_dom",
-  "get_element",
-  "inspect_element",
-  "get_console_logs",
-  "get_page_errors",
-  "get_network_errors",
-  "take_screenshot",
-  "run_javascript",
-  "browser_execute_js",
-  "browser_read_page",
-  "run_test",
-  "terminal_exec",
-  "terminal_reset",
-  "check_links",
-  "check_page",
-  "check_console",
-  "open_page",
-  "reload_page",
-  "wait",
-]);
 
 type Bridge = {
   execute: (
@@ -54,8 +33,9 @@ type Bridge = {
   ) => Promise<{ result?: unknown; error?: string }>;
 };
 
-export function useChatStream(bridge: Bridge | null) {
-  // Use stable selectors so the hook doesn't re-subscribe on every render.
+export function useChatStream(bridge: { execute: Bridge["execute"] }) {
+  const bridgeRef = React.useRef(bridge.execute);
+  bridgeRef.current = bridge.execute;
   const chatId = useChatStore((s) => s.chatId);
   const appendMessage = useChatStore((s) => s.appendMessage);
   const startStreaming = useChatStore((s) => s.startStreaming);
@@ -74,7 +54,6 @@ export function useChatStream(bridge: Bridge | null) {
   const setMessages = useChatStore((s) => s.setMessages);
   const streamingMessageId = useChatStore((s) => s.streamingMessageId);
 
-  // Tool / file / browser store actions (stable references)
   const toolStart = useToolStore((s) => s.start);
   const toolAppendArgs = useToolStore((s) => s.appendArguments);
   const toolExecute = useToolStore((s) => s.execute);
@@ -90,43 +69,20 @@ export function useChatStream(bridge: Bridge | null) {
   const browserAdd = useBrowserStore((s) => s.add);
   const browserReset = useBrowserStore((s) => s.reset);
 
-  // Live file-stream → workspace-store bridge. When file.delta events arrive,
-  // we also push the accumulated content into the workspace store so the
-  // CodeMirror editor shows the file being written in real time (PRD §20, §21,
-  // §40). The editor subscribes to workspaceStore.files[path] and updates
-  // incrementally without flickering (PRD §23).
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const addFile = useWorkspaceStore((s) => s.addFile);
   const setAiEditing = useWorkspaceStore((s) => s.setAiEditing);
   const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
-
   const renameMessage = useChatStore((s) => s.renameMessage);
 
-  const abortRef = React.useRef<AbortController | null>(null);
-  const bridgeRef = React.useRef(bridge);
-  React.useEffect(() => {
-    bridgeRef.current = bridge;
-  }, [bridge]);
 
-  // ---------- EventDispatcher handlers ----------
-  //
-  // These are the bridge between the parsed StreamEvents and the stores.
-  // Every handler runs IMMEDIATELY when an event arrives — no batching,
-  // no throttle (PRD §8). React 18's automatic batching keeps re-renders
-  // bounded to one per frame even under high event rates.
-  //
-  // The handlers are memoized on the stable store actions so the dispatcher
-  // reference is stable across renders (preventing use-chat-stream from
-  // re-subscribing its consumers on every render).
+  const worker = useAgentWorker();
+  const abortRef = React.useRef<{ stop: () => void; resume: (r: { callId: string; result?: unknown; error?: string }[]) => void } | null>(null);
 
   const handlers = React.useMemo<DispatcherHandlers>(
     () => ({
-      onTextDelta: (messageId, delta) => {
-        appendTextDelta(messageId, delta);
-      },
-      onThinkingDelta: (messageId, delta) => {
-        appendThinkingDelta(messageId, delta);
-      },
+      onTextDelta: (messageId, delta) => appendTextDelta(messageId, delta),
+      onThinkingDelta: (messageId, delta) => appendThinkingDelta(messageId, delta),
       onToolStart: (ev) => {
         toolStart({
           toolCallId: ev.toolCallId,
@@ -134,9 +90,6 @@ export function useChatStream(bridge: Bridge | null) {
           tool: ev.tool,
           label: ev.label,
         });
-        // Also create a lightweight tool_call segment in the chat store so
-        // the message renders a ToolCard placeholder immediately and so the
-        // persisted message has the segment for hydration after refresh.
         upsertToolCallSegment(ev.messageId, {
           type: "tool_call",
           tool: ev.tool,
@@ -148,13 +101,7 @@ export function useChatStream(bridge: Bridge | null) {
         });
       },
       onToolArgumentsDelta: (ev) => {
-        // Append the DELTA to the ToolStore's rawArguments (the source of
-        // truth for live display). Also mirror the accumulated text into the
-        // chat-store segment so persisted messages render correctly.
         toolAppendArgs(ev.toolCallId, ev.delta);
-        // Best-effort: update the chat-store segment's argumentsText so the
-        // ToolCard (which may read from the message segment for legacy
-        // reasons) sees the streaming text. We read the latest from ToolStore.
         const t = useToolStore.getState().tools[ev.toolCallId];
         if (t) {
           upsertToolCallSegment(ev.messageId, {
@@ -170,8 +117,6 @@ export function useChatStream(bridge: Bridge | null) {
       },
       onToolExecute: (toolCallId) => {
         toolExecute(toolCallId);
-        // Mark the chat-store segment as still running (the card transitions
-        // from "generating" to "executing" via the ToolStore state).
         const t = useToolStore.getState().tools[toolCallId];
         if (t) {
           upsertToolCallSegment(t.messageId, {
@@ -189,14 +134,7 @@ export function useChatStream(bridge: Bridge | null) {
         toolProgress(toolCallId, message, progress);
       },
       onToolResult: (ev) => {
-        toolResult(
-          ev.toolCallId,
-          ev.status,
-          ev.result,
-          ev.error,
-          ev.label,
-          ev.detail
-        );
+        toolResult(ev.toolCallId, ev.status, ev.result, ev.error, ev.label, ev.detail);
         setToolResult(ev.messageId, ev.toolCallId, {
           status: ev.status,
           result: ev.result,
@@ -214,43 +152,22 @@ export function useChatStream(bridge: Bridge | null) {
           operation: ev.operation,
           toolCallId: ev.toolCallId,
         });
-        // Mark the file as AI-editing so the editor becomes read-only and
-        // autosave is suppressed during streaming (prevents the autosave
-        // timer from firing mid-stream and fighting with the live updates).
         setAiEditing(ev.path, true);
-        // Ensure the file exists in the workspace store with empty content
-        // so the editor can open it and begin receiving deltas.
         const ws = useWorkspaceStore.getState();
-        if (!ws.files[ev.path]) {
-          addFile(ev.path, "", false);
-        } else {
-          updateFileContent(ev.path, "");
-        }
-        // Auto-open the file being written so the user sees it live (PRD §21).
+        if (!ws.files[ev.path]) addFile(ev.path, "", false);
+        else updateFileContent(ev.path, "");
         ws.openTab(ev.path);
         ws.setActiveFile(ev.path);
       },
       onFileDelta: (ev) => {
         fileStreamDelta(ev.path, ev.delta);
-        // Append the delta to the workspace store's file content so the
-        // CodeMirror editor re-renders with the new text. We read the
-        // accumulated content from the FileStreamStore (source of truth).
         const fs = useFileStreamStore.getState().streams[ev.path];
-        if (fs) {
-          updateFileContent(ev.path, fs.content);
-        }
+        if (fs) updateFileContent(ev.path, fs.content);
       },
       onFileComplete: (ev) => {
         fileStreamComplete(ev.path, ev.bytes);
-        // Final sync to workspace store.
         const fs = useFileStreamStore.getState().streams[ev.path];
-        if (fs) {
-          updateFileContent(ev.path, fs.content);
-        }
-        // Release the AI-editing lock so the user can edit again, and bump
-        // the preview so the live website refreshes with the final content
-        // (PRD §24 — preview scheduler coalesces reloads, never the file
-        // stream itself).
+        if (fs) updateFileContent(ev.path, fs.content);
         setAiEditing(ev.path, false);
         bumpPreview();
       },
@@ -263,221 +180,123 @@ export function useChatStream(bridge: Bridge | null) {
         });
         toolAddConsole(ev.toolCallId, ev.level, ev.args, ev.time);
       },
-      onStreamStart: (_messageId) => {
-        // The streaming message was already created in sendMessage. Nothing
-        // to do here except optionally reset per-stream bookkeeping.
-      },
-      onStreamComplete: (_messageId) => {
-        // The finally block in sendMessage will call stopStreaming().
-      },
+      onStreamStart: () => {},
+      onStreamComplete: () => {},
       onStreamError: (messageId, content) => {
         if (messageId) addErrorSegment(messageId, content);
       },
       onBrowserToolsPending: (_messageId, callIds) => {
         setPendingBrowserTools(callIds);
       },
-      onAgentStatus: (ev) => {
-        setAgentStatus(ev.status, ev.message, ev.currentAction);
-      },
-      onAgentProgress: (ev) => {
-        setAgentProgress(ev.message, ev.progress);
-      },
-      onRunHeartbeat: (ev) => {
-        setHeartbeat(ev.timestamp, ev.currentStep);
-      },
+      onAgentStatus: (ev) => setAgentStatus(ev.status, ev.message, ev.currentAction),
+      onAgentProgress: (ev) => setAgentProgress(ev.message, ev.progress),
+      onRunHeartbeat: (ev) => setHeartbeat(ev.timestamp, ev.currentStep),
     }),
     [
-      appendTextDelta,
-      appendThinkingDelta,
-      toolStart,
-      toolAppendArgs,
-      toolExecute,
-      toolProgress,
-      toolResult,
-      toolComplete,
-      toolAddConsole,
-      fileStreamStart,
-      fileStreamDelta,
-      fileStreamComplete,
-      browserAdd,
-      upsertToolCallSegment,
-      setToolResult,
-      addErrorSegment,
-      setPendingBrowserTools,
-      setAgentStatus,
-      setAgentProgress,
-      setHeartbeat,
-      addFile,
-      updateFileContent,
-      setAiEditing,
-      bumpPreview,
+      appendTextDelta, appendThinkingDelta, toolStart, toolAppendArgs,
+      toolExecute, toolProgress, toolResult, toolComplete, toolAddConsole,
+      fileStreamStart, fileStreamDelta, fileStreamComplete, browserAdd,
+      upsertToolCallSegment, setToolResult, addErrorSegment,
+      setPendingBrowserTools, setAgentStatus, setAgentProgress, setHeartbeat,
+      addFile, updateFileContent, setAiEditing, bumpPreview,
     ]
   );
 
   const dispatcherRef = React.useRef(new EventDispatcher(handlers));
   React.useEffect(() => {
-    // Update the dispatcher's handlers when the memoized handlers change
-    // (they're stable across renders due to the dependency array above, but
-    // we keep this effect to be safe).
     dispatcherRef.current = new EventDispatcher(handlers);
   }, [handlers]);
 
-  // ---------- Stream consumer ----------
-  //
-  // Consumes a raw ReadableStream via the StreamEngine, dispatches each parsed
-  // StreamEvent to the stores IMMEDIATELY, and collects any browser tool
-  // callIds that need client-side execution. Returns the list of pending
-  // browser tool callIds when the stream ends.
-  const consumeStream = React.useCallback(
+  // Persist worker "persist" / "files-snapshot" control messages to
+  // localStorage and keep the workspace file store in sync.
+  React.useEffect(() => {
+    const off = worker.onWorkerMessage((ev) => {
+      const anyEv = ev as unknown as {
+        type: string;
+        segments?: MessageSegment[];
+        files?: WorkerFile[];
+      };
+      if (anyEv.type === "persist") {
+        const cid = useChatStore.getState().chatId;
+        if (cid && anyEv.segments) {
+          db.message
+            .update({
+              where: { id: cid },
+              data: { segments: stringifyJSON(anyEv.segments) },
+            })
+            .catch(() => {});
+        }
+      }
+      if ((anyEv.type === "persist" || anyEv.type === "files-snapshot") && anyEv.files) {
+        const ws = useWorkspaceStore.getState();
+        if (ws.currentWorkspaceId) {
+          const wsId = ws.currentWorkspaceId;
+          for (const f of anyEv.files) {
+            db.file
+              .upsert({
+                where: { workspaceId_path: { workspaceId: wsId, path: f.path } },
+                update: { content: f.content, isBinary: f.isBinary },
+                create: { workspaceId: wsId, path: f.path, content: f.content, isBinary: f.isBinary },
+              })
+              .catch(() => {});
+          }
+        }
+      }
+    });
+    return off;
+  }, [worker]);
+
+  const consumeAndRun = React.useCallback(
     async (
-      stream: ReadableStream<Uint8Array>,
+      handle: Awaited<ReturnType<typeof worker.start>>,
       assistantId: string,
       signal: AbortSignal
-    ): Promise<{ browserPending: string[] }> => {
-      const browserPending: string[] = [];
+    ) => {
+      let browserPending: string[] = [];
       const dispatcher = dispatcherRef.current;
-
-      // Watchdog: if no event arrives for 5 minutes, abort so the spinner
-      // can't spin forever (PRD §33 interrupted streams). We use the outer
-      // abortRef (set by sendMessage) to cancel the in-flight fetch.
-      let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
-      let timedOut = false;
-      const WATCHDOG_MS = 5 * 60 * 1000;
-      const resetWatchdog = () => {
-        if (watchdogTimer) clearTimeout(watchdogTimer);
-        watchdogTimer = setTimeout(() => {
-          timedOut = true;
-          addErrorSegment(
-            assistantId,
-            "The AI stream has been silent for 5 minutes and was aborted. Please try again."
-          );
-          toast.error("AI stream timed out", {
-            description: "No events received for 5 minutes.",
-          });
-          try {
-            abortRef.current?.abort();
-          } catch {
-            // noop
-          }
-        }, WATCHDOG_MS);
-      };
-      const clearWatchdog = () => {
-        if (watchdogTimer) {
-          clearTimeout(watchdogTimer);
-          watchdogTimer = null;
-        }
-      };
-      resetWatchdog();
-
-      // CRITICAL: The client creates the assistant message with a local ID
-      // (e.g. "a_abc123"), but the server sends stream events with the DB
-      // message's ID (e.g. "cmss..."). If we don't reconcile these IDs,
-      // every appendTextDelta / upsertToolCallSegment call will fail to find
-      // the message and silently drop the update — causing the "stuck on
-      // thinking" UI bug where the AI's response never appears during
-      // streaming (only after a page reload fetches the persisted message).
-      //
-      // Fix: on the FIRST event that carries a server messageId different
-      // from our local assistantId, rename the message in the store. After
-      // that, all subsequent events (text.delta, tool.start, etc.) will
-      // find the message by its new (server) ID.
       let idReconciled = false;
-      // Track the CURRENT message id (starts as the client-generated id,
-      // becomes the server's id after reconciliation).
-      let currentMessageId = assistantId;
-
-      try {
-        for await (const evt of consumeReadableStream(stream, { signal })) {
-          if (signal.aborted || timedOut) break;
-          resetWatchdog();
-
-          // Reconcile the message ID on the first event that has a messageId.
-          if (!idReconciled && evt.messageId && evt.messageId !== assistantId) {
-            renameMessage(assistantId, evt.messageId);
-            currentMessageId = evt.messageId;
-            idReconciled = true;
-          }
-
-          // Track browser tool calls that need client-side execution. We
-          // collect them from tool.start events (so we know the tool name)
-          // AND from the explicit browser.tools_pending event (which is the
-          // server's authoritative "these need execution now" signal).
-          if (evt.type === "browser.tools_pending") {
-            for (const id of evt.callIds) {
-              if (!browserPending.includes(id)) browserPending.push(id);
-            }
-          }
-
-          // Route every event to the dispatcher → stores. IMMEDIATE, no batch.
-          dispatcher.dispatch(evt);
-
-          if (evt.type === "stream.complete") break;
+      for await (const ev of handle.events) {
+        if (signal.aborted) break;
+        if (!idReconciled && ev.messageId && ev.messageId !== assistantId) {
+          renameMessage(assistantId, ev.messageId);
+          idReconciled = true;
         }
-      } catch (err) {
-        if (signal.aborted) {
-          // User cancelled — preserve partial content (PRD §34).
-        } else {
-          const msg = err instanceof Error ? err.message : "Stream error";
-          addErrorSegment(currentMessageId, msg);
-          toast.error("AI stream error", { description: msg });
+        if (ev.type === "browser.tools_pending") {
+          for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
         }
-      } finally {
-        clearWatchdog();
+        dispatcher.dispatch(ev as StreamEvent);
+        if (ev.type === "stream.complete") break;
       }
 
-      return { browserPending };
+      if (browserPending.length > 0 && !signal.aborted) {
+        await runBrowserToolsAndContinue(handle, browserPending, assistantId, signal);
+      }
     },
-    [addErrorSegment, renameMessage]
+    [worker, renameMessage]
   );
 
-  // ---------- Browser tool execution + /continue loop ----------
-  //
-  // After the primary stream ends, if there are pending browser tools, run
-  // them against the preview iframe and call /continue with the results. The
-  // /continue stream may produce MORE browser tools — we loop until none
-  // remain (PRD §27 event ordering, fix-3 in worklog).
-  const executeBrowserToolsAndContinue = React.useCallback(
+  const runBrowserToolsAndContinue = React.useCallback(
     async (
-      chatIdLocal: string,
+      handle: Awaited<ReturnType<typeof worker.start>>,
       initialCallIds: string[],
       assistantId: string,
       signal: AbortSignal
     ) => {
-      const b = bridgeRef.current;
-      if (!b) {
-        toast.error("Preview not available", {
-          description: "Open the Preview tab to enable browser automation.",
-        });
-        return;
-      }
-
-      let pendingCallIds = initialCallIds;
-      let iteration = 0;
-      const MAX_CONTINUE_ITERATIONS = 25;
-      while (
-        pendingCallIds.length > 0 &&
-        !signal.aborted &&
-        iteration < MAX_CONTINUE_ITERATIONS
-      ) {
-        iteration++;
-        const results: { callId: string; result?: unknown; error?: string }[] =
-          [];
-        for (const callId of pendingCallIds) {
+      let pending = initialCallIds;
+      let iter = 0;
+      const MAX = 25;
+      while (pending.length > 0 && !signal.aborted && iter < MAX) {
+        iter++;
+        const results: { callId: string; result?: unknown; error?: string }[] = [];
+        for (const callId of pending) {
           const t = useToolStore.getState().tools[callId];
           if (!t) {
             results.push({ callId, error: "Tool call not found" });
             continue;
           }
           try {
-            const r = await b.execute(t.tool, t.parsedArguments ?? {}, callId);
-            toolResult(
-              callId,
-              r.error ? "error" : "success",
-              r.result,
-              r.error,
-              t.label,
-              t.detail
-            );
+            const r = await bridgeRef.current(t.tool, t.parsedArguments ?? {}, callId);
+            toolResult(callId, r.error ? "error" : "success", r.result, r.error, t.label, t.detail);
             setToolResult(assistantId, callId, {
               status: r.error ? "error" : "success",
               result: r.result,
@@ -485,55 +304,106 @@ export function useChatStream(bridge: Bridge | null) {
             });
             toolComplete(callId);
             results.push({ callId, result: r.result, error: r.error });
-          } catch (err) {
-            const errMsg =
-              err instanceof Error ? err.message : "Execution failed";
-            toolResult(callId, "error", undefined, errMsg, t.label, t.detail);
-            setToolResult(assistantId, callId, {
-              status: "error",
-              error: errMsg,
-            });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Execution failed";
+            toolResult(callId, "error", undefined, msg, t.label, t.detail);
+            setToolResult(assistantId, callId, { status: "error", error: msg });
             toolComplete(callId);
-            results.push({ callId, error: errMsg });
+            results.push({ callId, error: msg });
           }
         }
-
         setPendingBrowserTools([]);
+        handle.resume(results);
 
-        try {
-          const stream = await api.streamContinue(
-            chatIdLocal,
-            { results },
-            signal
-          );
-          const { browserPending } = await consumeStream(
-            stream,
-            assistantId,
-            signal
-          );
-          pendingCallIds = browserPending;
-        } catch (err) {
-          if (signal.aborted) return;
-          const errMsg =
-            err instanceof Error ? err.message : "Continue failed";
-          addErrorSegment(assistantId, errMsg);
-          toast.error("AI continue failed", { description: errMsg });
-          return;
+        // Consume the resumed stream for another round of events
+        let browserPending: string[] = [];
+        const dispatcher = dispatcherRef.current;
+        for await (const ev of handle.events) {
+          if (signal.aborted) break;
+          if (ev.type === "browser.tools_pending") {
+            for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
+          }
+          dispatcher.dispatch(ev as StreamEvent);
+          if (ev.type === "stream.complete") break;
         }
-      }
-      if (iteration >= MAX_CONTINUE_ITERATIONS && pendingCallIds.length > 0) {
-        addErrorSegment(
-          assistantId,
-          "Reached the maximum number of browser-tool continuation rounds (25). The agent may be stuck in a loop — try rephrasing your request."
-        );
+        pending = browserPending;
       }
     },
-    [consumeStream, toolResult, toolComplete, setToolResult, setPendingBrowserTools, addErrorSegment]
+    [toolResult, toolComplete, setToolResult, setPendingBrowserTools]
   );
 
-  // Ref so the retry action can re-invoke sendMessage without a self-reference.
-  const sendMessageRef = React.useRef<(content: string) => Promise<void>>(
-    async () => {}
+  const buildWorkerInput = React.useCallback(
+    async (chatIdLocal: string, context?: { activeFile?: string | null; selectedFiles?: string[] }) => {
+      const ws = useWorkspaceStore.getState();
+      const workspaceId = ws.currentWorkspaceId;
+      if (!workspaceId) throw new Error("No workspace");
+
+      const workspace = await db.workspace.findUnique({ where: { id: workspaceId } });
+      if (!workspace) throw new Error("Workspace not found");
+
+      const fileRows = await db.file.findMany({
+        where: { workspaceId },
+        orderBy: { path: "asc" },
+      });
+      const files: WorkerFile[] = fileRows.map((f) => ({
+        path: f.path as string,
+        content: f.content as string,
+        isBinary: Boolean(f.isBinary),
+      }));
+
+      const paths = files.map((f) => f.path);
+      const entry = findEntryFile(paths);
+      let activeFile = ws.activeFile ?? (workspace.activeFile as string | null);
+      if (context?.activeFile !== undefined) activeFile = context.activeFile ?? null;
+      const selectedFiles = context?.selectedFiles ?? [];
+
+      let activeFileContent: string | null = null;
+      if (activeFile) {
+        const af = files.find((f) => f.path === activeFile);
+        if (af) activeFileContent = af.content;
+      }
+      const agentMdRow = files.find((f) => f.path === AGENT_MD_FILENAME);
+
+      const dbMessages = await db.message.findMany({
+        where: { chatId: chatIdLocal },
+        orderBy: { createdAt: "asc" },
+      });
+      const messages: WorkerChatMessage[] = dbMessages.map((m) => ({
+        id: m.id as string,
+        role: m.role as "user" | "assistant",
+        segments: m.segments as string,
+      }));
+
+      // Resolve the active provider from localStorage — the DTO in the store
+      // hides the apiKey, so we always read the full row here.
+      let fullProvider = await db.provider.findFirst({ where: { isActive: true } });
+      if (!fullProvider) {
+        fullProvider = await db.provider.findFirst({ orderBy: { createdAt: "asc" } });
+      }
+      if (!fullProvider) throw new Error("No AI provider configured. Add one in Settings → Providers.");
+      const provider: WorkerProvider = {
+        id: fullProvider.id,
+        name: fullProvider.name,
+        baseURL: fullProvider.baseURL,
+        apiKey: fullProvider.apiKey,
+        model: fullProvider.model,
+        isActive: Boolean(fullProvider.isActive),
+      };
+
+      return {
+        workspaceName: workspace.name as string,
+        entryFile: entry,
+        activeFile,
+        activeFileContent,
+        selectedFiles,
+        agentMdContent: (agentMdRow?.content as string) ?? null,
+        files,
+        messages,
+        provider,
+        context,
+      };
+    },
+    []
   );
 
   const sendMessage = React.useCallback(
@@ -545,11 +415,11 @@ export function useChatStream(bridge: Bridge | null) {
       }
       if (!content.trim()) return;
 
-      // Reset per-stream stores so old tool/file state doesn't leak in.
       toolReset();
       fileStreamReset();
       browserReset();
 
+      const activeFile = useWorkspaceStore.getState().activeFile;
       const userMsg: Message = {
         id: uid("u"),
         chatId: localChatId,
@@ -565,45 +435,41 @@ export function useChatStream(bridge: Bridge | null) {
         segments: [],
         createdAt: new Date().toISOString(),
       };
+
+      // Persist user + empty assistant message to localStorage
+      await db.message.create({
+        data: {
+          id: userMsg.id,
+          chatId: localChatId,
+          role: "user",
+          segments: stringifyJSON(userMsg.segments),
+        },
+      });
+      await db.message.create({
+        data: {
+          id: assistantId,
+          chatId: localChatId,
+          role: "assistant",
+          segments: stringifyJSON([]),
+        },
+      });
+      await db.chat.update({ where: { id: localChatId }, data: { updatedAt: new Date() } });
+
       appendMessage(userMsg);
       appendMessage(assistantMsg);
       startStreaming(assistantId);
 
       const controller = new AbortController();
-      abortRef.current = controller;
-
-      const activeFile = useWorkspaceStore.getState().activeFile;
-
       try {
-        const stream = await api.streamMessage(
-          localChatId,
-          { content, context: { activeFile } },
-          controller.signal
-        );
-        const { browserPending } = await consumeStream(
-          stream,
-          assistantId,
-          controller.signal
-        );
-        if (browserPending.length > 0 && !controller.signal.aborted) {
-          await executeBrowserToolsAndContinue(
-            localChatId,
-            browserPending,
-            assistantId,
-            controller.signal
-          );
-        }
-      } catch (err) {
+        const input = await buildWorkerInput(localChatId, { activeFile });
+        const handle = await worker.start({ messageId: assistantId, ...input });
+        abortRef.current = { stop: handle.stop, resume: handle.resume };
+        await consumeAndRun(handle, assistantId, controller.signal);
+      } catch (e) {
         if (!controller.signal.aborted) {
-          const msg = err instanceof Error ? err.message : "Send failed";
+          const msg = e instanceof Error ? e.message : "Send failed";
           addErrorSegment(assistantId, msg);
-          toast.error("AI request failed", {
-            description: msg,
-            action: {
-              label: "Retry",
-              onClick: () => void sendMessageRef.current(content),
-            },
-          });
+          toast.error("AI request failed", { description: msg });
         }
       } finally {
         stopStreaming();
@@ -611,47 +477,11 @@ export function useChatStream(bridge: Bridge | null) {
       }
     },
     [
-      chatId,
-      appendMessage,
-      startStreaming,
-      stopStreaming,
-      addErrorSegment,
-      consumeStream,
-      executeBrowserToolsAndContinue,
-      toolReset,
-      fileStreamReset,
+      chatId, appendMessage, startStreaming, stopStreaming, addErrorSegment,
+      buildWorkerInput, worker, consumeAndRun, toolReset, fileStreamReset,
       browserReset,
     ]
   );
-
-  const stop = React.useCallback(() => {
-    abortRef.current?.abort();
-    stopStreaming();
-  }, [stopStreaming]);
-
-  sendMessageRef.current = sendMessage;
-
-  // Derive the last user message content from the store snapshot. We read
-  // via getState() on each render so we don't subscribe to `messages` (which
-  // would re-render this hook on every delta during streaming).
-  const lastUserMessage = React.useMemo(() => {
-    const msgs = useChatStore.getState().messages;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if (m.role === "user") {
-        return m.segments
-          .filter(
-            (s): s is Extract<MessageSegment, { type: "content" }> =>
-              s.type === "content"
-          )
-          .map((s) => s.content)
-          .join("");
-      }
-    }
-    return "";
-  }, [chatId, isStreaming, streamingMessageId]);
-
-  const regenerateRef = React.useRef<() => Promise<void>>(async () => {});
 
   const regenerate = React.useCallback(async () => {
     const localChatId = chatId ?? useChatStore.getState().chatId;
@@ -659,112 +489,97 @@ export function useChatStream(bridge: Bridge | null) {
       toast.error("No chat selected");
       return;
     }
+    if (abortRef.current) abortRef.current.stop();
 
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
-
-    // Reset per-stream stores.
     toolReset();
     fileStreamReset();
     browserReset();
 
-    const current = useChatStore.getState().messages;
+    // Find last user message; delete everything after it
+    const rows = await db.message.findMany({
+      where: { chatId: localChatId },
+      orderBy: { createdAt: "asc" },
+    });
     let lastUserIdx = -1;
-    for (let i = current.length - 1; i >= 0; i--) {
-      if (current[i].role === "user") {
-        lastUserIdx = i;
-        break;
-      }
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].role === "user") { lastUserIdx = i; break; }
     }
     if (lastUserIdx < 0) {
-      toast.error("Nothing to regenerate", {
-        description: "Send a message first.",
-      });
+      toast.error("Nothing to regenerate");
       return;
     }
-    const trimmed = current.slice(0, lastUserIdx + 1);
-    setMessages(trimmed);
+    const toDelete = rows.slice(lastUserIdx + 1);
+    for (const r of toDelete) {
+      await db.message.delete({ where: { id: r.id as string } }).catch(() => {});
+    }
+
+    const remaining = rows.slice(0, lastUserIdx + 1);
+    setMessages(
+      remaining.map((r) => ({
+        id: r.id as string,
+        chatId: localChatId,
+        role: r.role as "user" | "assistant",
+        segments: parseJSON<MessageSegment[]>(r.segments as string, []),
+        createdAt:
+          r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
+      }))
+    );
 
     const assistantId = uid("a");
-    const assistantMsg: Message = {
+    await db.message.create({
+      data: { id: assistantId, chatId: localChatId, role: "assistant", segments: stringifyJSON([]) },
+    });
+    appendMessage({
       id: assistantId,
       chatId: localChatId,
       role: "assistant",
       segments: [],
       createdAt: new Date().toISOString(),
-    };
-    appendMessage(assistantMsg);
+    });
     startStreaming(assistantId);
 
     const controller = new AbortController();
-    abortRef.current = controller;
-
     try {
-      const stream = await api.streamRegenerate(localChatId, controller.signal);
-      const { browserPending } = await consumeStream(
-        stream,
-        assistantId,
-        controller.signal
-      );
-      if (browserPending.length > 0 && !controller.signal.aborted) {
-        await executeBrowserToolsAndContinue(
-          localChatId,
-          browserPending,
-          assistantId,
-          controller.signal
-        );
-      }
-    } catch (err) {
+      const input = await buildWorkerInput(localChatId, { activeFile: null });
+      const handle = await worker.start({ messageId: assistantId, ...input });
+      abortRef.current = { stop: handle.stop, resume: handle.resume };
+      await consumeAndRun(handle, assistantId, controller.signal);
+    } catch (e) {
       if (!controller.signal.aborted) {
-        const msg = err instanceof Error ? err.message : "Regenerate failed";
+        const msg = e instanceof Error ? e.message : "Regenerate failed";
         addErrorSegment(assistantId, msg);
-        toast.error("AI regenerate failed", {
-          description: msg,
-          action: {
-            label: "Retry",
-            onClick: () => void regenerateRef.current(),
-          },
-        });
+        toast.error("AI regenerate failed", { description: msg });
       }
     } finally {
       stopStreaming();
       abortRef.current = null;
     }
-  }, [
-    chatId,
-    appendMessage,
-    startStreaming,
-    stopStreaming,
-    addErrorSegment,
-    consumeStream,
-    executeBrowserToolsAndContinue,
-    setMessages,
-    toolReset,
-    fileStreamReset,
-    browserReset,
-  ]);
+  }, [chatId, appendMessage, startStreaming, stopStreaming, addErrorSegment, buildWorkerInput, worker, consumeAndRun, setMessages, toolReset, fileStreamReset, browserReset]);
 
-  regenerateRef.current = regenerate;
+  const stop = React.useCallback(() => {
+    abortRef.current?.stop();
+    stopStreaming();
+  }, [stopStreaming]);
 
   React.useEffect(() => {
-    function onRegenerate() {
-      void regenerateRef.current();
-    }
+    function onRegenerate() { void regenerate(); }
     window.addEventListener("chat:regenerate", onRegenerate);
-    return () => {
-      window.removeEventListener("chat:regenerate", onRegenerate);
-    };
-  }, []);
+    return () => window.removeEventListener("chat:regenerate", onRegenerate);
+  }, [regenerate]);
 
-  return {
-    sendMessage,
-    stop,
-    regenerate,
-    isStreaming,
-    lastUserMessage,
-    setChatId,
-    setMessages,
-  };
+  const lastUserMessage = React.useMemo(() => {
+    const msgs = useChatStore.getState().messages;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role === "user") {
+        return m.segments
+          .filter((s): s is Extract<MessageSegment, { type: "content" }> => s.type === "content")
+          .map((s) => s.content)
+          .join("");
+      }
+    }
+    return "";
+  }, [chatId, isStreaming, streamingMessageId]);
+
+  return { sendMessage, stop, regenerate, isStreaming, lastUserMessage, setChatId, setMessages };
 }

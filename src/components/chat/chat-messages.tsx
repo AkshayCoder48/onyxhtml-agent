@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ArrowDown, RefreshCw, Sparkles, MessageSquare, Zap, Bot, User, Wand2, Lightbulb } from "lucide-react";
+import { ArrowDown, RefreshCw, Sparkles, MessageSquare, Zap, Bot, User, Wand2, Lightbulb, Palette } from "lucide-react";
 import { useChatStore } from "@/stores/chat-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useUIStore } from "@/stores/ui-store";

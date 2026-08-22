@@ -33,6 +33,27 @@ const BROWSER_TOOLS = new Set([
   "check_links",
   "check_page",
   "check_console",
+  "check_page",
+  "run_unit_tests",
+  "run_integration_tests",
+  "run_e2e_test",
+  "assert_text",
+  "assert_element",
+  "assert_url",
+  "assert_title",
+  "assert_attribute",
+  "assert_visible",
+  "assert_hidden",
+  "assert_enabled",
+  "assert_disabled",
+  "assert_screenshot",
+  "test_api_endpoint",
+  "test_form",
+  "test_navigation",
+  "test_responsive_layout",
+  "test_console",
+  "test_network",
+  "test_performance",
   "open_page",
   "reload_page",
 ]);
@@ -171,6 +192,40 @@ function summarizeArgs(tool: string, args: Record<string, unknown> | undefined):
       return String(a.url ?? "");
     case "check_links":
       return "links";
+    case "run_unit_tests":
+    case "run_integration_tests":
+    case "run_e2e_test":
+      return typeof a.name === "string" && a.name ? a.name : "tests";
+    case "assert_text":
+      return String(a.text ?? "").slice(0, 60);
+    case "assert_element":
+    case "assert_visible":
+    case "assert_hidden":
+    case "assert_enabled":
+    case "assert_disabled":
+      return String(a.selector ?? "");
+    case "assert_url":
+      return String(a.expected ?? "");
+    case "assert_title":
+      return String(a.expected ?? "");
+    case "assert_attribute":
+      return String(a.attribute ?? "");
+    case "assert_screenshot":
+      return "screenshot";
+    case "test_api_endpoint":
+      return `${String(a.method ?? "GET")} ${String(a.url ?? "")}`;
+    case "test_form":
+      return String(a.formSelector ?? "");
+    case "test_navigation":
+      return String(a.selector ?? "");
+    case "test_responsive_layout":
+      return "responsive";
+    case "test_console":
+      return String(a.level ?? "error");
+    case "test_network":
+      return "network";
+    case "test_performance":
+      return "performance";
     case "get_network_errors":
       return "network";
     default:
