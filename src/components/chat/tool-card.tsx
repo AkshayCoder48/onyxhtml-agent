@@ -85,6 +85,8 @@ const BROWSER_TOOLS = new Set([
   "test_performance",
   "open_page",
   "reload_page",
+  "wait",
+  "run_qa_suite",
 ]);
 
 const FILE_TOOLS = new Set([
@@ -159,6 +161,7 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   test_console: Terminal,
   test_network: Globe,
   test_performance: Zap,
+  run_qa_suite: Zap,
 };
 
 const STATE_LABEL: Record<ToolCardState, string> = {
@@ -440,6 +443,35 @@ export function ToolCard({
             )}
           </div>
 
+          {/* QA suite report */}
+          {isQaResult(result) && (
+            <div className="space-y-2 rounded-lg border bg-card p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className={cn("text-[12px] font-semibold", result.pass ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400")}>
+                  {result.pass ? "PASS" : "FAIL"} · {result.score}/100
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {result.passed}/{result.total} checks
+                </span>
+              </div>
+              <div className="text-[12px] text-muted-foreground">{result.report}</div>
+              {Array.isArray(result.failedChecks) && result.failedChecks.length > 0 && (
+                <ul className="space-y-1 text-[11px]">
+                  {result.failedChecks.slice(0, 8).map((c, i) => (
+                    <li key={i} className="text-red-600/90 dark:text-red-400/90">
+                      · {c.message}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {Array.isArray(result.suggestions) && result.suggestions.length > 0 && (
+                <div className="text-[11px] text-muted-foreground">
+                  Fix: {result.suggestions[0]}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Error */}
           {error && (
             <div className="rounded-lg border border-red-500/20 bg-red-500/[0.06] p-3">
@@ -532,6 +564,20 @@ function KVTable({ rows }: { rows: [string, string][] }) {
       ))}
     </div>
   );
+}
+
+function isQaResult(result: unknown): result is {
+  pass: boolean;
+  score: number;
+  passed: number;
+  total: number;
+  report: string;
+  failedChecks?: { id?: string; message: string }[];
+  suggestions?: string[];
+} {
+  if (!result || typeof result !== "object") return false;
+  const r = result as Record<string, unknown>;
+  return typeof r.report === "string" && typeof r.pass === "boolean" && typeof r.score === "number";
 }
 
 function pickFileArg(tool: string, args: Record<string, unknown> | undefined): string | undefined {

@@ -63,6 +63,7 @@ const BROWSER_TOOLS: ToolName[] = [
   "test_console",
   "test_network",
   "test_performance",
+  "run_qa_suite",
 ];
 
 export function isBrowserTool(name: string): boolean {
@@ -1061,6 +1062,30 @@ export function getToolDefinitions(): ToolDefinition[] {
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "run_qa_suite",
+        description:
+          "Run the built-in web-dev QA suite against the live preview and return a structured report. Checks: document ready, visible content, title, headings, viewport meta, page/console/network errors, image alt, form labels, horizontal overflow, plus any requiredSelectors / requiredText you pass. Returns { pass, score, passed, failed, total, checks[], failedChecks[], errors, suggestions[], report }. Call this after every meaningful change (TEST phase). If pass is false, AUTO-FIX using suggestions then re-run this tool.",
+        parameters: {
+          type: "object",
+          properties: {
+            requiredSelectors: {
+              type: "array",
+              items: { type: "string" },
+              description: "CSS selectors that must exist (e.g. ['h1', 'nav', 'footer']).",
+            },
+            requiredText: {
+              type: "array",
+              items: { type: "string" },
+              description: "Visible text snippets that must appear on the page.",
+            },
+          },
+          required: [],
+        },
+      },
+    },
   ];
 }
 
@@ -1173,6 +1198,8 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "network";
       case "test_performance":
         return "performance";
+      case "run_qa_suite":
+        return "qa suite";
       default:
         return "";
     }

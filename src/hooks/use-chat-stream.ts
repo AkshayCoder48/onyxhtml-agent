@@ -25,6 +25,48 @@ function uid(prefix = "m") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 }
 
+function parseArgsJson(raw: string | undefined): Record<string, unknown> | undefined {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveBrowserToolCall(callId: string): {
+  tool: string;
+  args: Record<string, unknown>;
+  label?: string;
+  detail?: string;
+} | null {
+  const t = useToolStore.getState().tools[callId];
+  if (t) {
+    return {
+      tool: t.tool,
+      args: t.parsedArguments ?? parseArgsJson(t.rawArguments) ?? {},
+      label: t.label,
+      detail: t.detail,
+    };
+  }
+  for (const m of useChatStore.getState().messages) {
+    for (const s of m.segments) {
+      if (s.type === "tool_call" && s.callId === callId) {
+        return {
+          tool: s.tool,
+          args: s.arguments ?? parseArgsJson(s.argumentsText) ?? {},
+          label: s.label,
+          detail: s.detail,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 type Bridge = {
   execute: (
     tool: string,
@@ -217,11 +259,11 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
         files?: WorkerFile[];
       };
       if (anyEv.type === "persist") {
-        const cid = useChatStore.getState().chatId;
-        if (cid && anyEv.segments) {
+        const mid = useChatStore.getState().streamingMessageId;
+        if (mid && anyEv.segments) {
           db.message
             .update({
-              where: { id: cid },
+              where: { id: mid },
               data: { segments: stringifyJSON(anyEv.segments) },
             })
             .catch(() => {});
@@ -246,6 +288,71 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
     return off;
   }, [worker]);
 
+  const runBrowserToolsAndContinue = React.useCallback(
+    async (
+      handle: Awaited<ReturnType<typeof worker.start>>,
+      initialCallIds: string[],
+      assistantId: string,
+      signal: AbortSignal
+    ) => {
+      let pending = initialCallIds;
+      let iter = 0;
+      const MAX = 25;
+      while (pending.length > 0 && !signal.aborted && iter < MAX) {
+        iter++;
+        const results: { callId: string; result?: unknown; error?: string }[] = [];
+        for (const callId of pending) {
+          const resolved = resolveBrowserToolCall(callId);
+          if (!resolved) {
+            results.push({ callId, error: "Tool call not found" });
+            continue;
+          }
+          try {
+            const r = await bridgeRef.current(resolved.tool, resolved.args, callId);
+            toolResult(
+              callId,
+              r.error ? "error" : "success",
+              r.result,
+              r.error,
+              resolved.label,
+              resolved.detail
+            );
+            setToolResult(assistantId, callId, {
+              status: r.error ? "error" : "success",
+              result: r.result,
+              error: r.error,
+            });
+            toolComplete(callId);
+            results.push({ callId, result: r.result, error: r.error });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Execution failed";
+            toolResult(callId, "error", undefined, msg, resolved.label, resolved.detail);
+            setToolResult(assistantId, callId, { status: "error", error: msg });
+            toolComplete(callId);
+            results.push({ callId, error: msg });
+          }
+        }
+        setPendingBrowserTools([]);
+        handle.resume(results);
+
+        // Consume the resumed stream for another round of events
+        let browserPending: string[] = [];
+        const dispatcher = dispatcherRef.current;
+        for await (const ev of handle.events) {
+          if (signal.aborted) break;
+          if (ev.type === "browser.tools_pending") {
+            for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
+          }
+          dispatcher.dispatch(ev as StreamEvent);
+          if (ev.type === "stream.complete" || ev.type === "stream.error") break;
+          if (ev.type === "browser.tools_pending") break;
+        }
+        pending = browserPending;
+      }
+    },
+    [toolResult, toolComplete, setToolResult, setPendingBrowserTools]
+  );
+
   const consumeAndRun = React.useCallback(
     async (
       handle: Awaited<ReturnType<typeof worker.start>>,
@@ -265,71 +372,18 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
           for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
         }
         dispatcher.dispatch(ev as StreamEvent);
-        if (ev.type === "stream.complete") break;
+        // CRITICAL: the worker PAUSES after browser.tools_pending and waits
+        // for resume. Heartbeats keep arriving, so waiting for stream.complete
+        // here deadlocks — tools spin "executing" forever. Break and run them.
+        if (ev.type === "stream.complete" || ev.type === "stream.error") break;
+        if (ev.type === "browser.tools_pending") break;
       }
 
       if (browserPending.length > 0 && !signal.aborted) {
         await runBrowserToolsAndContinue(handle, browserPending, assistantId, signal);
       }
     },
-    [worker, renameMessage]
-  );
-
-  const runBrowserToolsAndContinue = React.useCallback(
-    async (
-      handle: Awaited<ReturnType<typeof worker.start>>,
-      initialCallIds: string[],
-      assistantId: string,
-      signal: AbortSignal
-    ) => {
-      let pending = initialCallIds;
-      let iter = 0;
-      const MAX = 25;
-      while (pending.length > 0 && !signal.aborted && iter < MAX) {
-        iter++;
-        const results: { callId: string; result?: unknown; error?: string }[] = [];
-        for (const callId of pending) {
-          const t = useToolStore.getState().tools[callId];
-          if (!t) {
-            results.push({ callId, error: "Tool call not found" });
-            continue;
-          }
-          try {
-            const r = await bridgeRef.current(t.tool, t.parsedArguments ?? {}, callId);
-            toolResult(callId, r.error ? "error" : "success", r.result, r.error, t.label, t.detail);
-            setToolResult(assistantId, callId, {
-              status: r.error ? "error" : "success",
-              result: r.result,
-              error: r.error,
-            });
-            toolComplete(callId);
-            results.push({ callId, result: r.result, error: r.error });
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : "Execution failed";
-            toolResult(callId, "error", undefined, msg, t.label, t.detail);
-            setToolResult(assistantId, callId, { status: "error", error: msg });
-            toolComplete(callId);
-            results.push({ callId, error: msg });
-          }
-        }
-        setPendingBrowserTools([]);
-        handle.resume(results);
-
-        // Consume the resumed stream for another round of events
-        let browserPending: string[] = [];
-        const dispatcher = dispatcherRef.current;
-        for await (const ev of handle.events) {
-          if (signal.aborted) break;
-          if (ev.type === "browser.tools_pending") {
-            for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
-          }
-          dispatcher.dispatch(ev as StreamEvent);
-          if (ev.type === "stream.complete") break;
-        }
-        pending = browserPending;
-      }
-    },
-    [toolResult, toolComplete, setToolResult, setPendingBrowserTools]
+    [renameMessage, runBrowserToolsAndContinue]
   );
 
   const buildWorkerInput = React.useCallback(
@@ -345,11 +399,21 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
         where: { workspaceId },
         orderBy: { path: "asc" },
       });
-      const files: WorkerFile[] = fileRows.map((f) => ({
-        path: f.path as string,
-        content: f.content as string,
-        isBinary: Boolean(f.isBinary),
-      }));
+      // Collapse duplicate paths (older upserts used a compound key the
+      // localStorage matcher did not understand and created extra rows).
+      const byPath = new Map<string, WorkerFile>();
+      for (const f of fileRows) {
+        byPath.set(f.path as string, {
+          path: f.path as string,
+          content: f.content as string,
+          isBinary: Boolean(f.isBinary),
+        });
+      }
+      // Live editor map wins — it has streamed/unsaved content the DB may lack.
+      for (const [path, f] of Object.entries(ws.files)) {
+        byPath.set(path, { path, content: f.content, isBinary: f.isBinary });
+      }
+      const files: WorkerFile[] = Array.from(byPath.values());
 
       const paths = files.map((f) => f.path);
       const entry = findEntryFile(paths);

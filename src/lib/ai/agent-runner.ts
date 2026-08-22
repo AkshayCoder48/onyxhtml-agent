@@ -13,6 +13,7 @@ import {
 } from "@/lib/types";
 import type { StreamEvent } from "@/lib/streaming/types";
 import { AGENT_MD_CONTENT, AGENT_MD_FILENAME } from "@/lib/agent-md";
+import { WEB_DEV_FRAMEWORK } from "@/lib/ai/web-dev-framework";
 import {
   ChatMessage,
   streamChatCompletion,
@@ -156,12 +157,15 @@ function buildSystemPrompt(opts: {
 }): string {
   const tree = buildFileTree(opts.filePaths);
   const treeText = renderTree(tree, 0);
-  const agentMd = opts.agentMdContent ?? AGENT_MD_CONTENT;
+  // Always inject the latest canonical manual + web-dev framework so existing
+  // workspaces (with a stale AGENT.md on disk) still get CREATE→RUN→TEST→REPORT→FIX.
   const parts: string[] = [
-    agentMd,
+    AGENT_MD_CONTENT,
+    "",
+    WEB_DEV_FRAMEWORK,
     "",
     "========================================================",
-    "AGENT.md ENDS HERE — workspace context follows.",
+    "AGENT.md + WEB DEV FRAMEWORK END HERE — workspace context follows.",
     "========================================================",
     "",
     `Workspace: ${opts.workspaceName}`,
@@ -170,6 +174,17 @@ function buildSystemPrompt(opts: {
     "File tree:",
     treeText || "(empty)",
   ];
+  if (
+    opts.agentMdContent &&
+    opts.agentMdContent.trim() &&
+    opts.agentMdContent !== AGENT_MD_CONTENT
+  ) {
+    parts.push(
+      "",
+      "USER-CUSTOMIZED AGENT.md (also obey):",
+      opts.agentMdContent.slice(0, 12000)
+    );
+  }
   if (opts.activeFile && opts.activeFileContent != null) {
     parts.push(
       "",
@@ -188,12 +203,13 @@ function buildSystemPrompt(opts: {
   parts.push(
     "",
     "REMINDERS (these override any contrary instinct):",
-    "- You ALREADY read AGENT.md above. Follow its lifecycle: PROBE → PLAN → EDIT → TEST → SUMMARIZE.",
+    "- You ALREADY read AGENT.md and the Web Dev Framework above.",
+    "  Follow CREATE → RUN → TEST → REPORT → AUTO-FIX. Do not skip TEST or REPORT.",
     "- Do NOT generate files when an edit would do. edit_file is the default for existing files.",
     "  create_file is ONLY for files that do not exist yet.",
-    "- Do NOT skip the TEST phase. After every meaningful change, verify with browser_read_page",
-    "  (observe), browser_execute_js (scripted checks), terminal_exec, or take_screenshot.",
-    "- Do NOT end the turn without a written SUMMARY.",
+    "- After every meaningful change, call run_qa_suite (then targeted asserts if needed).",
+    "- If run_qa_suite.pass is false, AUTO-FIX (max 3 loops) then re-run the same check.",
+    "- Do NOT end the turn without a written REPORT (Changes / Verification / Remaining).",
     "- The preview is already loaded with index.html. Do NOT call open_page first.",
     "- Keep explanations brief — one or two sentences before each action.",
     "- ALWAYS prefer the surgical edit over a full rewrite."
@@ -296,26 +312,11 @@ export class AgentRunner {
     const s = this.state;
     const emit: Emit = (ev) => post(ev);
 
-    // Reconstruct assistant message with tool_calls
-    const assistantContent = segmentsToContentText(s.segments);
-    const assistantToolCalls: ToolCallRef[] = [];
-    for (const seg of s.segments) {
-      if (seg.type === "tool_call") {
-        assistantToolCalls.push({
-          id: seg.callId,
-          type: "function",
-          function: {
-            name: seg.tool,
-            arguments: stringifyJSON(seg.arguments ?? {}),
-          },
-        });
-      }
-    }
-    if (assistantToolCalls.length > 0) {
-      const m: ChatMessage = { role: "assistant", content: assistantContent || null };
-      (m as { tool_calls?: ToolCallRef[] }).tool_calls = assistantToolCalls;
-      s.conversation.push(m);
-    }
+    // The paused loop already appended the assistant message (with tool_calls)
+    // and any file-tool results. Re-pushing that assistant message here used
+    // to duplicate every historical tool_call and made the provider reject
+    // the conversation — browser tools then looked "errored". Only append
+    // the pending browser-tool results.
 
     for (const r of results) {
       const idx = s.segments.findIndex(
