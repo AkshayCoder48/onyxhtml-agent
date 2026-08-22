@@ -144,6 +144,10 @@ const BRIDGE_SCRIPT = `
     window.addEventListener("load", announceReady);
   }
 
+  // Host-side tools read these arrays directly (same-origin). Keep the
+  // references stable so later console/error/network pushes are visible.
+  window.__onyxPreview = { logs: logs, errs: errs, networkErrors: networkErrors };
+
   function styleSummary(el) {
     try {
       var cs = window.getComputedStyle(el);
@@ -1226,11 +1230,35 @@ export function PreviewPane({
   const previewNonce = useWorkspaceStore((s) => s.previewNonce);
   const { settings } = useSettings();
 
-  const paths = React.useMemo(() => Object.keys(files), [files]);
+  // Freeze srcDoc while the AI is streaming file bytes — rebuilding the
+  // iframe on every delta killed the document the browser tools were
+  // talking to (infinite "loading" / instant error).
+  const [previewFiles, setPreviewFiles] = React.useState(files);
+  const previewFilesRef = React.useRef(files);
+  React.useEffect(() => {
+    if (useWorkspaceStore.getState().aiEditingFiles.size > 0) return;
+    const apply = () => {
+      previewFilesRef.current = files;
+      setPreviewFiles(files);
+    };
+    if (Object.keys(previewFilesRef.current).length === 0) {
+      apply();
+      return;
+    }
+    const handle = window.setTimeout(apply, 180);
+    return () => window.clearTimeout(handle);
+  }, [files]);
+  React.useEffect(() => {
+    const latest = useWorkspaceStore.getState().files;
+    previewFilesRef.current = latest;
+    setPreviewFiles(latest);
+  }, [previewNonce]);
+
+  const paths = React.useMemo(() => Object.keys(previewFiles), [previewFiles]);
   const entry = React.useMemo(() => findEntryFile(paths), [paths]);
   const doc = React.useMemo(
-    () => (entry ? buildPreviewDoc(files, entry) : ""),
-    [files, entry, previewNonce]
+    () => (entry ? buildPreviewDoc(previewFiles, entry) : ""),
+    [previewFiles, entry]
   );
 
   // Local custom-device state (not in the store — the segmented control still
@@ -1308,12 +1336,14 @@ export function PreviewPane({
   // third-party content), so the security trade-off is acceptable.
   const renderIframe = (className?: string, style?: React.CSSProperties) => (
     <iframe
+      key={previewNonce}
       ref={iframeRef}
       title="preview"
       srcDoc={doc}
       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
       className={cn("bg-white", className)}
       style={style}
+      loading="eager"
     />
   );
 

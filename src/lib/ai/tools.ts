@@ -1198,6 +1198,8 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
         return "network";
       case "test_performance":
         return "performance";
+      case "run_qa_suite":
+        return "qa suite";
       default:
         return "";
     }

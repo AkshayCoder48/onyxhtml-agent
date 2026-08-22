@@ -4,12 +4,18 @@ import * as React from "react";
 import { useBrowserStore } from "@/stores/browser-store";
 import { useToolStore } from "@/stores/tool-store";
 import { useWorkspaceStore } from "@/stores/workspace-store";
+import {
+  executeHostBrowserTool,
+  getIframeWindow,
+  sleep,
+  waitForStablePreviewDocument,
+  type IFrameWindow,
+} from "@/lib/preview/host-browser-tools";
 
-// Bridge for sending browser-automation commands to the preview iframe and
-// receiving results. Uses postMessage with request/response correlation by
-// callId. Waits for the iframe bridge to announce `kind: "ready"` so tools
-// never fire into a half-loaded document (the old 8s timeout + no handshake
-// is what made tools spin forever or instantly error).
+// Bridge for sending browser-automation commands to the preview iframe.
+// Primary path: host-side execution against iframe.contentDocument (same-origin).
+// That does not depend on a postMessage "ready" ping, so a missed handshake
+// can no longer leave tools spinning for 8s or erroring immediately.
 
 export type BridgeExecute = (
   tool: string,
@@ -43,10 +49,6 @@ type NetworkEntry = {
   time: number;
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function timeoutForTool(tool: string, args: Record<string, unknown>): number {
   const num = (v: unknown, fallback: number) => {
     const n = Number(v);
@@ -79,6 +81,32 @@ function timeoutForTool(tool: string, args: Record<string, unknown>): number {
   }
 }
 
+async function waitForAiEditingIdle(timeoutMs = 6000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (useWorkspaceStore.getState().aiEditingFiles.size === 0) break;
+    await sleep(40);
+  }
+  // Two frames so React can commit a pending srcDoc / iframe remount.
+  if (typeof requestAnimationFrame === "function") {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+  } else {
+    await sleep(32);
+  }
+}
+
+function forwardLiveConsole(callId: string, level: ConsoleMessage["level"], args: string[], time: number) {
+  useBrowserStore.getState().add({
+    toolCallId: callId,
+    level,
+    args,
+    time,
+  });
+  useToolStore.getState().addConsoleLine(callId, level, args, time);
+}
+
 export function usePreviewBridge(
   iframeRef: React.RefObject<HTMLIFrameElement | null>,
   onConsole?: (m: ConsoleMessage) => void,
@@ -97,8 +125,10 @@ export function usePreviewBridge(
     cbRef.current = { onConsole, onError, onNetwork };
   }, [onConsole, onError, onNetwork]);
 
-  // A preview reload (file write / bumpPreview) tears down the old document.
-  // Forget "ready" so the next execute waits for the new bridge ping.
+  // A preview remount (file.complete / bumpPreview) gets a new document.
+  // Increment the generation so in-flight waiters can distinguish "old ready"
+  // from "new ready". Do NOT treat a missed ping as a hard failure — the host
+  // executor only needs contentDocument.
   const previewNonce = useWorkspaceStore((s) => s.previewNonce);
   React.useEffect(() => {
     readyRef.current = false;
@@ -110,23 +140,27 @@ export function usePreviewBridge(
     for (const w of waiters) w();
   }, []);
 
-  const waitReady = React.useCallback((timeoutMs = 8000): Promise<boolean> => {
-    if (readyRef.current && iframeRef.current?.contentWindow) {
-      return Promise.resolve(true);
-    }
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        const idx = readyWaitersRef.current.indexOf(onReady);
-        if (idx >= 0) readyWaitersRef.current.splice(idx, 1);
-        resolve(readyRef.current && !!iframeRef.current?.contentWindow);
-      }, timeoutMs);
-      const onReady = () => {
-        clearTimeout(timer);
-        resolve(true);
-      };
-      readyWaitersRef.current.push(onReady);
-    });
-  }, [iframeRef]);
+  const waitReady = React.useCallback(
+    (timeoutMs = 8000): Promise<boolean> => {
+      const iframe = iframeRef.current;
+      if (iframe && isHostReady(iframe)) return Promise.resolve(true);
+      if (readyRef.current && iframe?.contentWindow) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const idx = readyWaitersRef.current.indexOf(onReady);
+          if (idx >= 0) readyWaitersRef.current.splice(idx, 1);
+          const el = iframeRef.current;
+          resolve(!!(el && (isHostReady(el) || el.contentWindow)));
+        }, timeoutMs);
+        const onReady = () => {
+          clearTimeout(timer);
+          resolve(true);
+        };
+        readyWaitersRef.current.push(onReady);
+      });
+    },
+    [iframeRef]
+  );
 
   React.useEffect(() => {
     function onMessage(ev: MessageEvent) {
@@ -151,13 +185,7 @@ export function usePreviewBridge(
           const args = Array.isArray(data.args)
             ? data.args.map((a: unknown) => String(a))
             : [];
-          useBrowserStore.getState().add({
-            toolCallId: data.callId,
-            level: data.level,
-            args,
-            time: typeof data.time === "number" ? data.time : Date.now(),
-          });
-          useToolStore.getState().addConsoleLine(
+          forwardLiveConsole(
             data.callId,
             data.level,
             args,
@@ -246,59 +274,116 @@ export function usePreviewBridge(
 
   const execute = React.useCallback<BridgeExecute>(
     async (tool, args, callId) => {
-      // Host-side tools — do not depend on the iframe script.
       if (tool === "wait") {
         const ms = Math.max(0, Math.min(Number(args.ms) || 0, 10_000));
         if (ms > 0) await sleep(ms);
         return { result: { ok: true, waited: ms } };
       }
+
       if (tool === "reload_page") {
         readyRef.current = false;
         useWorkspaceStore.getState().bumpPreview();
-        const ok = await waitReady(8000);
+        await waitForAiEditingIdle(2000);
+        const iframe = iframeRef.current;
+        const ok = iframe ? await waitForStablePreviewDocument(iframe, 6000) : false;
         return {
           result: {
             ok,
             reloaded: true,
             note: ok
               ? "Preview reloaded."
-              : "Reload requested; preview did not announce ready in time.",
+              : "Reload requested; preview document was not ready in time.",
           },
         };
       }
 
-      // Give a just-written preview a moment to parse srcDoc + run the bridge.
-      if (!readyRef.current) {
-        const iframe = iframeRef.current;
-        if (!iframe || !iframe.contentWindow) {
-          await sleep(150);
-        }
-        const ok = await waitReady(8000);
-        if (!ok && (!iframeRef.current || !iframeRef.current.contentWindow)) {
-          return {
-            error:
-              "Preview iframe not available. Switch to Preview so the page can load, then retry.",
-          };
-        }
+      await waitForAiEditingIdle();
+
+      const iframe = iframeRef.current;
+      if (!iframe) {
+        return {
+          error:
+            "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+        };
       }
 
+      const stable = await waitForStablePreviewDocument(iframe, 6000);
+      if (!stable && !iframe.contentWindow) {
+        return {
+          error:
+            "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+        };
+      }
+
+      // Prefer a same-origin function the bridge may have installed, then
+      // the host executor. postMessage is a last-resort fallback only.
+      const win = getIframeWindow(iframe);
       const timeoutMs = timeoutForTool(tool, args);
-      const first = await postToIframe(tool, args, callId, timeoutMs);
-      if (!first.error || !String(first.error).includes("timed out")) {
-        return first;
+
+      if (win && typeof win.__onyxRunTool === "function") {
+        try {
+          const out = await withTimeout(
+            win.__onyxRunTool(tool, args, callId),
+            timeoutMs,
+            `Tool '${tool}' timed out after ${timeoutMs}ms.`
+          );
+          if (out && (out.result !== undefined || out.error)) return out;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.includes("timed out")) {
+            // Fall through to host executor.
+          }
+        }
       }
 
-      // One retry after the next ready ping — covers the race where we posted
-      // into a document that was about to be replaced by a file-write reload.
-      readyRef.current = false;
-      const recovered = await waitReady(5000);
-      if (!recovered) return first;
-      return postToIframe(tool, args, `${callId}__retry`, timeoutMs);
+      const host = await withTimeout(
+        executeHostBrowserTool(iframe, tool, args, callId, {
+          onConsole: (level, lineArgs, time) => {
+            forwardLiveConsole(callId, level, lineArgs, time);
+            cbRef.current.onConsole?.({ level, args: lineArgs, time });
+          },
+        }),
+        timeoutMs,
+        `Tool '${tool}' timed out after ${timeoutMs}ms.`
+      );
+      if (!host.error || !String(host.error).startsWith("Unknown browser tool")) {
+        return host;
+      }
+
+      return postToIframe(tool, args, callId, timeoutMs);
     },
-    [iframeRef, postToIframe, waitReady]
+    [iframeRef, postToIframe]
   );
 
   return { execute, waitReady };
 }
 
+function isHostReady(iframe: HTMLIFrameElement): boolean {
+  try {
+    const doc = iframe.contentDocument;
+    const win = iframe.contentWindow as IFrameWindow | null;
+    if (!doc || !win || !doc.documentElement) return false;
+    if (doc.readyState === "loading") return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
 
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  }).catch((e) => {
+    return { error: e instanceof Error ? e.message : String(e) } as T;
+  });
+}

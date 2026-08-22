@@ -145,8 +145,50 @@ function compareValues(av: unknown, bv: unknown): number {
   return 1;
 }
 
+// Prisma compound unique inputs look like
+//   { workspaceId_path: { workspaceId, path } }
+// The row has workspaceId + path, not a workspaceId_path field. Flatten those
+// objects so findUnique / upsert actually match existing file rows.
+const FILTER_OPS = new Set([
+  "equals",
+  "in",
+  "notIn",
+  "not",
+  "startsWith",
+  "endsWith",
+  "contains",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+]);
+
+function expandWhere(where: Where): Where {
+  const out: Where = {};
+  for (const key of Object.keys(where)) {
+    const expected = where[key];
+    if (
+      key.includes("_") &&
+      expected &&
+      typeof expected === "object" &&
+      !Array.isArray(expected) &&
+      !(expected instanceof Date)
+    ) {
+      const obj = expected as Record<string, unknown>;
+      const keys = Object.keys(obj);
+      if (keys.length > 0 && keys.every((k) => !FILTER_OPS.has(k))) {
+        Object.assign(out, obj);
+        continue;
+      }
+    }
+    out[key] = expected;
+  }
+  return out;
+}
+
 function matchWhere(row: Row, where: Where | undefined): boolean {
   if (!where) return true;
+  where = expandWhere(where);
   for (const key of Object.keys(where)) {
     const expected = where[key];
     if (key === "AND") {

@@ -288,39 +288,6 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
     return off;
   }, [worker]);
 
-  const consumeAndRun = React.useCallback(
-    async (
-      handle: Awaited<ReturnType<typeof worker.start>>,
-      assistantId: string,
-      signal: AbortSignal
-    ) => {
-      let browserPending: string[] = [];
-      const dispatcher = dispatcherRef.current;
-      let idReconciled = false;
-      for await (const ev of handle.events) {
-        if (signal.aborted) break;
-        if (!idReconciled && ev.messageId && ev.messageId !== assistantId) {
-          renameMessage(assistantId, ev.messageId);
-          idReconciled = true;
-        }
-        if (ev.type === "browser.tools_pending") {
-          for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
-        }
-        dispatcher.dispatch(ev as StreamEvent);
-        // CRITICAL: the worker PAUSES after browser.tools_pending and waits
-        // for resume. Heartbeats keep arriving, so waiting for stream.complete
-        // here deadlocks — tools spin "executing" forever. Break and run them.
-        if (ev.type === "stream.complete" || ev.type === "stream.error") break;
-        if (ev.type === "browser.tools_pending") break;
-      }
-
-      if (browserPending.length > 0 && !signal.aborted) {
-        await runBrowserToolsAndContinue(handle, browserPending, assistantId, signal);
-      }
-    },
-    [worker, renameMessage]
-  );
-
   const runBrowserToolsAndContinue = React.useCallback(
     async (
       handle: Awaited<ReturnType<typeof worker.start>>,
@@ -386,6 +353,39 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
     [toolResult, toolComplete, setToolResult, setPendingBrowserTools]
   );
 
+  const consumeAndRun = React.useCallback(
+    async (
+      handle: Awaited<ReturnType<typeof worker.start>>,
+      assistantId: string,
+      signal: AbortSignal
+    ) => {
+      let browserPending: string[] = [];
+      const dispatcher = dispatcherRef.current;
+      let idReconciled = false;
+      for await (const ev of handle.events) {
+        if (signal.aborted) break;
+        if (!idReconciled && ev.messageId && ev.messageId !== assistantId) {
+          renameMessage(assistantId, ev.messageId);
+          idReconciled = true;
+        }
+        if (ev.type === "browser.tools_pending") {
+          for (const id of ev.callIds) if (!browserPending.includes(id)) browserPending.push(id);
+        }
+        dispatcher.dispatch(ev as StreamEvent);
+        // CRITICAL: the worker PAUSES after browser.tools_pending and waits
+        // for resume. Heartbeats keep arriving, so waiting for stream.complete
+        // here deadlocks — tools spin "executing" forever. Break and run them.
+        if (ev.type === "stream.complete" || ev.type === "stream.error") break;
+        if (ev.type === "browser.tools_pending") break;
+      }
+
+      if (browserPending.length > 0 && !signal.aborted) {
+        await runBrowserToolsAndContinue(handle, browserPending, assistantId, signal);
+      }
+    },
+    [renameMessage, runBrowserToolsAndContinue]
+  );
+
   const buildWorkerInput = React.useCallback(
     async (chatIdLocal: string, context?: { activeFile?: string | null; selectedFiles?: string[] }) => {
       const ws = useWorkspaceStore.getState();
@@ -399,11 +399,21 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
         where: { workspaceId },
         orderBy: { path: "asc" },
       });
-      const files: WorkerFile[] = fileRows.map((f) => ({
-        path: f.path as string,
-        content: f.content as string,
-        isBinary: Boolean(f.isBinary),
-      }));
+      // Collapse duplicate paths (older upserts used a compound key the
+      // localStorage matcher did not understand and created extra rows).
+      const byPath = new Map<string, WorkerFile>();
+      for (const f of fileRows) {
+        byPath.set(f.path as string, {
+          path: f.path as string,
+          content: f.content as string,
+          isBinary: Boolean(f.isBinary),
+        });
+      }
+      // Live editor map wins — it has streamed/unsaved content the DB may lack.
+      for (const [path, f] of Object.entries(ws.files)) {
+        byPath.set(path, { path, content: f.content, isBinary: f.isBinary });
+      }
+      const files: WorkerFile[] = Array.from(byPath.values());
 
       const paths = files.map((f) => f.path);
       const entry = findEntryFile(paths);
