@@ -1,4 +1,4 @@
-import { AppSettings, DEFAULT_SETTINGS } from "./types";
+import { AppSettings, DEFAULT_SETTINGS, UI_THEMES } from "./types";
 
 // ============================================================================
 // Settings persistence — browser localStorage only (no database).
@@ -25,6 +25,9 @@ export function getSettingsSync(): AppSettings {
     }
     if (merged.theme !== "light" && merged.theme !== "dark" && merged.theme !== "system") {
       merged.theme = DEFAULT_SETTINGS.theme;
+    }
+    if (!Object.keys(UI_THEMES).includes(merged.uiTheme as any)) {
+      merged.uiTheme = DEFAULT_SETTINGS.uiTheme;
     }
     if (
       merged.defaultViewport !== "desktop" &&

@@ -82,7 +82,8 @@ import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
-import type { Provider, ProviderInput } from "@/lib/types";
+import type { Provider, ProviderInput, UITheme } from "@/lib/types";
+import { UI_THEMES } from "@/lib/types";
 
 type Category = "providers" | "appearance" | "editor" | "preview" | "general" | "shortcuts";
 
