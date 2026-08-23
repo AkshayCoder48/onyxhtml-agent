@@ -6,6 +6,7 @@ import { OnyxFileTree } from "./file-tree";
 import { OnyxAskUser } from "./ask-user";
 import { OnyxPalette, OnyxColorContrast } from "./palette";
 import { OnyxReasoningTree, OnyxChecklist, OnyxCommands } from "./reasoning-tree";
+import { OnyxDependencyGraph, OnyxFileStats } from "./dependency-graph";
 
 export type OnyxComponentType =
   | "plan"
@@ -48,6 +49,9 @@ export const ONYX_REGISTRY: Record<string, React.ComponentType<any>> = {
   todo: OnyxChecklist,
   commands: OnyxCommands,
   "command-suggestions": OnyxCommands,
+  "dependency-graph": OnyxDependencyGraph,
+  "file-stats": OnyxFileStats,
+  "html-outline": OnyxFileStats,
 };
 
 export function parseOnyxBlock(lang: string, jsonStr: string): { type: string; props: any } | null {
