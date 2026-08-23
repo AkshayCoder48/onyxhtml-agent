@@ -10,7 +10,7 @@ export type SidebarView =
   | "history"
   | "search";
 
-export type MobileView = "code" | "preview" | "ai" | "files";
+export type MobileView = "workspace" | "ai" | "code" | "preview" | "files";
 
 type UIState = {
   sidebarCollapsed: boolean;
@@ -42,7 +42,7 @@ export const useUIStore = create<UIState>((set) => ({
   commandPaletteOpen: false,
   quickFileOpen: false,
   consoleOpen: false,
-  mobileView: "code",
+  mobileView: "workspace",
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),

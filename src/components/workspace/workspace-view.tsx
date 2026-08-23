@@ -25,14 +25,14 @@ import { ChatHistory } from "@/components/chat/chat-history";
 import { ChatSearch } from "@/components/chat/chat-search";
 import { usePreviewBridge, type BridgeExecute } from "@/hooks/use-preview-bridge";
 import { useSettings } from "@/hooks/use-settings";
-import { cn } from "@/lib/utils";
+import { useInstantFileSync } from "@/hooks/use-instant-file-sync";
 
 export function WorkspaceView() {
   const activeSidebarView = useUIStore((s) => s.activeSidebarView);
   const consoleOpen = useUIStore((s) => s.consoleOpen);
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
-  const previewMode = useWorkspaceStore((s) => s.previewMode);
   const { settings } = useSettings();
+  useInstantFileSync();
 
   const [consoleMessages, setConsoleMessages] = React.useState<PreviewConsoleMessage[]>([]);
   const [pageErrors, setPageErrors] = React.useState<PreviewError[]>([]);
@@ -61,7 +61,6 @@ export function WorkspaceView() {
     }
   }, [settings.consoleVisible, setConsoleOpen]);
 
-  const showLeftPanel = previewMode === "code";
   const leftPanelContent = (() => {
     switch (activeSidebarView) {
       case "files":
@@ -83,9 +82,9 @@ export function WorkspaceView() {
         <div className="flex h-full flex-col bg-background">
           <WorkspaceHeader />
           <WorkspaceToolbar />
-          <div className="relative min-h-0 flex-1 bg-background">
-            {showLeftPanel && (
-              <div className="absolute inset-0">
+          <div className="min-h-0 flex-1 bg-background">
+            <ResizablePanelGroup direction="vertical" className="h-full">
+              <ResizablePanel defaultSize={56} minSize={24} className="bg-background">
                 <ResizablePanelGroup direction="horizontal" className="h-full">
                   <ResizablePanel defaultSize={22} minSize={12} maxSize={40} className="bg-card/30">
                     {leftPanelContent}
@@ -95,11 +94,12 @@ export function WorkspaceView() {
                     <CodeEditor />
                   </ResizablePanel>
                 </ResizablePanelGroup>
-              </div>
-            )}
-            <div className={cn("absolute inset-0 bg-muted/10", showLeftPanel && "opacity-0 pointer-events-none")} aria-hidden={showLeftPanel}>
-              <PreviewPane iframeRef={iframeRef} />
-            </div>
+              </ResizablePanel>
+              <ResizableHandle withHandle className="h-1 bg-border/50 hover:bg-violet-500/20 transition-colors" />
+              <ResizablePanel defaultSize={44} minSize={18} className="bg-muted/10">
+                <PreviewPane iframeRef={iframeRef} />
+              </ResizablePanel>
+            </ResizablePanelGroup>
           </div>
           {consoleOpen && (
             <div className="h-56 shrink-0 border-t bg-card">

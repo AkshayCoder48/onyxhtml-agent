@@ -35,6 +35,7 @@ export type PreviewCapture = {
 };
 
 export type IFrameWindow = Window & {
+  __onyxEntry?: string;
   __onyxRunTool?: (
     tool: string,
     args: Record<string, unknown>,
@@ -142,6 +143,12 @@ function styleSummary(win: Window, el: Element): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function previewPageUrl(win: IFrameWindow): string {
+  const entry = win.__onyxEntry || "index.html";
+  const hash = win.location.hash || "";
+  return `https://preview.local/${entry}${hash}`;
 }
 
 function $(doc: Document, selector: string): Element | null {
@@ -273,7 +280,7 @@ export async function executeHostBrowserTool(
   if (!win || !doc) {
     return {
       error:
-        "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+        "Preview iframe not available. Wait for the live preview to load, then retry.",
     };
   }
 
@@ -297,13 +304,22 @@ async function runTool(
   const capture = readPreviewCapture(win);
 
   switch (tool) {
-    case "open_page":
+    case "open_page": {
+      const href = String(args.url || args.path || args.href || "");
+      if (href) {
+        try {
+          win.parent.postMessage({ source: "preview", kind: "navigate", href, target: "" }, "*");
+        } catch {
+          // ignore
+        }
+      }
       return {
         ok: true,
-        url: win.location.href,
+        url: previewPageUrl(win),
         title: doc.title || "",
         ready: doc.readyState,
       };
+    }
 
     case "reload_page":
       return {
@@ -449,7 +465,7 @@ async function runTool(
         });
       });
       return {
-        url: win.location.href,
+        url: previewPageUrl(win),
         title: doc.title || "",
         readyState: doc.readyState,
         text: bodyText.slice(0, 8000),
@@ -562,7 +578,7 @@ async function runTool(
 
     case "check_page":
       return {
-        url: win.location.href,
+        url: previewPageUrl(win),
         title: doc.title || "",
         readyState: doc.readyState,
         text: ((doc.body && doc.body.innerText) || "").slice(0, 4000),
@@ -629,7 +645,7 @@ async function runTool(
     case "assert_url": {
       const expected = String(args.expected ?? "");
       const mode = String(args.match || "contains");
-      const actual = win.location.href;
+      const actual = previewPageUrl(win);
       const pass = matchString(actual, expected, mode);
       return {
         pass,
@@ -827,11 +843,11 @@ async function runTool(
 
     case "test_navigation": {
       const el = requireEl(doc, args.selector) as HTMLElement;
-      const before = { url: win.location.href, title: doc.title };
+      const before = { url: previewPageUrl(win), title: doc.title };
       el.click();
       const waitMs = Number(args.waitMs || 500);
       if (waitMs > 0) await sleep(waitMs);
-      const after = { url: win.location.href, title: doc.title };
+      const after = { url: previewPageUrl(win), title: doc.title };
       const urlPass = !args.expectUrl || after.url.includes(String(args.expectUrl));
       const titlePass =
         !args.expectTitle || (after.title || "").toLowerCase().includes(String(args.expectTitle).toLowerCase());

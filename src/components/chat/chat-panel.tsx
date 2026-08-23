@@ -38,6 +38,7 @@ import { ChatPromptBox } from "./prompt-box";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import type { BridgeExecute } from "@/hooks/use-preview-bridge";
 import { useUIStore } from "@/stores/ui-store";
+import { persistChatMessages, writeLastChatId } from "@/lib/chat-persist";
 
 export function ChatPanel({
   bridgeExecute,
@@ -71,15 +72,20 @@ export function ChatPanel({
       setChatId(null);
       return;
     }
-    if (chatId) return;
+    if (chatId) {
+      writeLastChatId(wsId, chatId);
+      return;
+    }
     if (chatsQuery.data && chatsQuery.data.length > 0) {
       const latest = chatsQuery.data[0];
       setChatId(latest.id);
+      writeLastChatId(wsId, latest.id);
     } else if (chatsQuery.data && chatsQuery.data.length === 0 && !chatsQuery.isFetching) {
       api
         .createChat(wsId, { title: "New Chat" })
         .then((c) => {
           setChatId(c.chat.id);
+          writeLastChatId(wsId, c.chat.id);
           queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
         })
         .catch(() => {});
@@ -89,14 +95,34 @@ export function ChatPanel({
   const messagesQuery = useQuery({
     queryKey: ["chat", chatId],
     queryFn: async () => (chatId ? await api.getChat(chatId) : null),
-    enabled: !!chatId,
+    enabled: !!chatId && !isStreaming,
   });
 
   React.useEffect(() => {
-    if (messagesQuery.data) {
-      setMessages(messagesQuery.data.messages);
+    if (!messagesQuery.data) return;
+    if (useChatStore.getState().isStreaming) return;
+    if (useChatStore.getState().chatId !== chatId) return;
+    setMessages(messagesQuery.data.messages);
+  }, [messagesQuery.data, setMessages, chatId]);
+
+  React.useEffect(() => {
+    function flush() {
+      const state = useChatStore.getState();
+      if (state.chatId && state.messages.length > 0) {
+        void persistChatMessages(state.chatId, state.messages);
+      }
     }
-  }, [messagesQuery.data, setMessages]);
+    const onHide = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      flush();
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, []);
 
   const stream = useChatStream({ execute: bridgeExecute ?? (async () => ({ error: "No preview" })) });
 
@@ -172,7 +198,15 @@ export function ChatPanel({
           <AgentStatusBar />
         </div>
       )}
-      <ChatPromptBox onSend={(t) => void stream.sendMessage(t)} onStop={stream.stop} isStreaming={isStreaming} />
+      <ChatPromptBox
+        onSend={async (t) => {
+          await stream.sendMessage(t);
+          await queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
+          if (chatId) await queryClient.invalidateQueries({ queryKey: ["chat", chatId] });
+        }}
+        onStop={stream.stop}
+        isStreaming={isStreaming}
+      />
 
       <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
         <DialogContent className="max-w-sm rounded-2xl">

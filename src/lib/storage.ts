@@ -562,6 +562,10 @@ function makeClient(): DbClient {
 
 export const db: DbClient = makeClient();
 
+export function flushStorage(): void {
+  persistNow();
+}
+
 export async function ensureDbInitialized(): Promise<void> {
   // localStorage is initialised lazily on first access. No default provider
   // is seeded — the user must add their own AI provider in Settings.

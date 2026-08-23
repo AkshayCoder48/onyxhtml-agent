@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/chat-store";
 import { api } from "@/lib/api";
 import { buildFileTree } from "@/lib/files";
 import { db } from "@/lib/db";
+import { readLastChatId, writeLastChatId } from "@/lib/chat-persist";
 
 // Loads the selected workspace's files into the workspace store and ensures a
 // chat exists. Replaces the per-component React Query fetching so opening a
@@ -33,22 +34,30 @@ export function useWorkspaceBootstrap() {
         setFiles(filesRes.files);
         setTree(filesRes.tree);
 
-        // Ensure a chat is selected
+        const remembered = readLastChatId(wsId);
         const currentChatId = useChatStore.getState().chatId;
-        if (currentChatId) {
-          const belongs = chatsRes.chats.some((c) => c.id === currentChatId);
-          if (belongs) return;
+        const chats = chatsRes.chats;
+
+        if (currentChatId && chats.some((c) => c.id === currentChatId)) {
+          writeLastChatId(wsId, currentChatId);
+          return;
         }
-        if (chatsRes.chats.length > 0) {
-          const first = chatsRes.chats[0];
-          setChatId(first.id);
-          const chat = await api.getChat(first.id);
-          if (cancelled) return;
+
+        const preferred =
+          (remembered && chats.find((c) => c.id === remembered)) || chats[0];
+
+        if (preferred) {
+          setChatId(preferred.id);
+          writeLastChatId(wsId, preferred.id);
+          if (useChatStore.getState().isStreaming) return;
+          const chat = await api.getChat(preferred.id);
+          if (cancelled || useChatStore.getState().isStreaming) return;
           setMessages(chat.messages);
         } else {
           const c = await api.createChat(wsId, { title: "New Chat" });
           if (cancelled) return;
           setChatId(c.chat.id);
+          writeLastChatId(wsId, c.chat.id);
           setMessages([]);
         }
       } catch (e) {
@@ -63,14 +72,18 @@ export function useWorkspaceBootstrap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsId]);
 
-  // When chatId changes, load that chat's messages.
+  // When chatId changes, load that chat's messages — never while streaming.
   React.useEffect(() => {
     if (!chatId) return;
+    if (useChatStore.getState().isStreaming) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await api.getChat(chatId);
-        if (!cancelled) setMessages(res.messages);
+        if (cancelled) return;
+        if (useChatStore.getState().isStreaming) return;
+        if (useChatStore.getState().chatId !== chatId) return;
+        setMessages(res.messages);
       } catch (e) {
         console.error("Failed to load chat:", e);
       }
@@ -79,6 +92,10 @@ export function useWorkspaceBootstrap() {
       cancelled = true;
     };
   }, [chatId, setMessages]);
+
+  React.useEffect(() => {
+    if (wsId && chatId) writeLastChatId(wsId, chatId);
+  }, [wsId, chatId]);
 }
 
 // Keeps the workspace store's file map in sync after a successful save /

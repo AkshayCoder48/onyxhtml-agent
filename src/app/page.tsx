@@ -14,8 +14,7 @@ import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { useSettings } from "@/hooks/use-settings";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useWorkspaceBootstrap } from "@/hooks/use-workspace-bootstrap";
-import { api } from "@/lib/api";
-import { toast } from "sonner";
+
 
 export default function Page() {
   const currentWorkspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -37,21 +36,8 @@ export default function Page() {
       key: "s",
       ctrl: true,
       meta: true,
-      handler: async () => {
-        const id = useWorkspaceStore.getState().currentWorkspaceId;
-        const path = useWorkspaceStore.getState().activeFile;
-        const entry = path ? useWorkspaceStore.getState().files[path] : null;
-        if (!id || !path || !entry) return;
-        try {
-          await api.putFile(id, path, entry.content);
-          useWorkspaceStore.getState().markSaved(path);
-          await api.patchWorkspace(id, { activeFile: path });
-          toast.success("Saved", { description: path });
-        } catch (e) {
-          toast.error("Save failed", {
-            description: e instanceof Error ? e.message : undefined,
-          });
-        }
+      handler: () => {
+        // Files already sync to localStorage on every keystroke.
       },
     },
     { key: "p", ctrl: true, meta: true, handler: () => setQuickFileOpen(true) },

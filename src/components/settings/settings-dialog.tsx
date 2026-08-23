@@ -113,10 +113,37 @@ const PROVIDER_PRESETS = [
   { name: "Custom", baseURL: "", icon: Server, color: "text-muted-foreground", models: [] },
 ];
 
+class SettingsErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-sm">
+          <div className="font-medium text-red-700 dark:text-red-300">Settings failed to render</div>
+          <p className="mt-1 text-xs text-muted-foreground">{this.state.error.message}</p>
+          <Button className="mt-3 rounded-full" size="sm" onClick={() => this.setState({ error: null })}>
+            Try again
+          </Button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function SettingsDialog() {
   const open = useUIStore((s) => s.settingsOpen);
   const close = useUIStore((s) => s.closeSettings);
-  const category = useUIStore((s) => s.settingsCategory) as Category;
+  const rawCategory = useUIStore((s) => s.settingsCategory);
+  const category: Category = CATEGORIES.some((c) => c.id === rawCategory)
+    ? (rawCategory as Category)
+    : "appearance";
   const openSettings = useUIStore((s) => s.openSettings);
 
   const [mobileView, setMobileView] = React.useState<"list" | "panel">("list");
@@ -130,7 +157,10 @@ export function SettingsDialog() {
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && close()}>
-      <DialogContent showCloseButton={false} className="max-h-[92vh] gap-0 overflow-hidden p-0 sm:max-w-[980px]">
+      <DialogContent
+        showCloseButton={false}
+        className="flex max-h-[min(92vh,820px)] w-[calc(100%-1.25rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[980px]"
+      >
         <DialogHeader className="sr-only">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>Configure the AI HTML Workspace Editor.</DialogDescription>
@@ -156,7 +186,7 @@ export function SettingsDialog() {
           </Button>
         </div>
 
-        <div className="flex h-[85vh] flex-col sm:h-[78vh] sm:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col sm:h-[min(78vh,700px)] sm:flex-row">
           {/* Left nav */}
           <nav
             className={cn(
@@ -244,12 +274,14 @@ export function SettingsDialog() {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
               <div className="p-4 sm:p-6">
-                {category === "providers" && <ProvidersPanel />}
-                {category === "appearance" && <AppearancePanel />}
-                {category === "editor" && <EditorPanel />}
-                {category === "preview" && <PreviewPanel />}
-                {category === "general" && <GeneralPanel />}
-                {category === "shortcuts" && <ShortcutsPanel />}
+                <SettingsErrorBoundary>
+                  {category === "providers" && <ProvidersPanel />}
+                  {category === "appearance" && <AppearancePanel />}
+                  {category === "editor" && <EditorPanel />}
+                  {category === "preview" && <PreviewPanel />}
+                  {category === "general" && <GeneralPanel />}
+                  {category === "shortcuts" && <ShortcutsPanel />}
+                </SettingsErrorBoundary>
               </div>
             </div>
           </div>
@@ -850,7 +882,7 @@ function EditorPanel() {
               {settings.fontSize}px
             </Badge>
           </div>
-          <Slider value={[settings.fontSize]} min={10} max={24} step={1} onValueChange={([v]) => void patch({ fontSize: v })} />
+          <Slider value={[Number(settings.fontSize) || 14]} min={10} max={24} step={1} onValueChange={([v]) => void patch({ fontSize: v })} />
           <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
             <span>Small</span>
             <span>Large</span>
@@ -879,7 +911,7 @@ function EditorPanel() {
         <SettingRow label="Word wrap" desc="Wrap long lines instead of horizontal scrolling" checked={settings.wordWrap} onChange={(v) => void patch({ wordWrap: v })} icon={FileCode} />
         <SettingRow label="Line numbers" desc="Show line numbers in the gutter" checked={settings.lineNumbers} onChange={(v) => void patch({ lineNumbers: v })} icon={Layers} />
         <SettingRow label="Minimap" desc="Show a code minimap in the editor gutter" checked={settings.minimap} onChange={(v) => void patch({ minimap: v })} icon={Monitor} />
-        <SettingRow label="Auto-save" desc="Save files automatically while editing (debounced)" checked={settings.autoSave} onChange={(v) => void patch({ autoSave: v })} icon={CheckCircle2} />
+        <SettingRow label="Instant sync" desc="Every edit is written to localStorage immediately. Manual save is not needed." checked={true} onChange={() => {}} icon={CheckCircle2} />
         <SettingRow label="Format on save" desc="Format the file when saving" checked={settings.formatOnSave} onChange={(v) => void patch({ formatOnSave: v })} icon={Wand2} />
       </div>
     </div>
@@ -897,7 +929,7 @@ function PreviewPanel() {
           <Label className="flex items-center gap-1.5">
             <Monitor className="size-3.5" /> Default viewport
           </Label>
-          <Select value={settings.defaultViewport} onValueChange={(v) => void patch({ defaultViewport: v as any })}>
+          <Select value={settings.defaultViewport === "tablet" || settings.defaultViewport === "mobile" ? settings.defaultViewport : "desktop"} onValueChange={(v) => void patch({ defaultViewport: v as any })}>
             <SelectTrigger className="h-10 rounded-xl">
               <SelectValue />
             </SelectTrigger>
@@ -912,7 +944,7 @@ function PreviewPanel() {
           <Label className="flex items-center gap-1.5">
             <RefreshCw className="size-3.5" /> Refresh behavior
           </Label>
-          <Select value={(settings as any).previewRefreshBehavior ?? "auto"} onValueChange={(v) => void patch({ previewRefreshBehavior: v as any })}>
+          <Select value={settings.previewRefreshBehavior === "onsave" || settings.previewRefreshBehavior === "manual" ? settings.previewRefreshBehavior : "auto"} onValueChange={(v) => void patch({ previewRefreshBehavior: v as any })}>
             <SelectTrigger className="h-10 rounded-xl">
               <SelectValue />
             </SelectTrigger>
@@ -978,7 +1010,7 @@ function GeneralPanel() {
           </div>
           <div className="flex-1">
             <div className="text-sm font-semibold">Storage</div>
-            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Workspaces, files, chats, and provider settings are stored locally in the app database. Clearing your browser data will remove them. Export workspaces as ZIP for backup.</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Workspaces, files, chats, and provider settings sync instantly to this browser&apos;s localStorage. Clearing site data will remove them. Export workspaces as ZIP for backup.</p>
           </div>
         </div>
       </div>
@@ -1019,7 +1051,7 @@ function GeneralPanel() {
 
 function ShortcutsPanel() {
   const items: [string, string, string][] = [
-    ["Save file", "⌘/Ctrl + S", "Save current file"],
+    ["Files sync instantly", "auto", "Edits write to localStorage as you type"],
     ["Quick file search", "⌘/Ctrl + P", "Open file quickly"],
     ["Focus AI prompt", "⌘/Ctrl + K", "Jump to AI input"],
     ["Command palette", "⌘/Ctrl + Shift + P", "All commands"],
@@ -1045,7 +1077,7 @@ function ShortcutsPanel() {
       <div className="rounded-xl border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
         <div className="flex gap-2">
           <Keyboard className="size-4 shrink-0" />
-          <span>Most shortcuts work globally. When the editor is focused, ⌘/Ctrl+S saves the file. In chat, ⌘/Ctrl+Enter sends the message.</span>
+          <span>Most shortcuts work globally. Files sync to localStorage as you type. In chat, ⌘/Ctrl+Enter sends the message.</span>
         </div>
       </div>
     </div>

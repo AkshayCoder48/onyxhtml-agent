@@ -31,21 +31,21 @@ export type PreviewBridge = {
 type ConsoleMessage = {
   level: "log" | "warn" | "error" | "info";
   args: unknown[];
-  time: number;
-};
+    });
+  } else {
+    await sleep(32);
+  }
+}
 
-type PageError = {
-  message: string;
-  filename?: string;
-  line?: number;
-  col?: number;
-  time: number;
-};
-
-type NetworkEntry = {
-  url: string;
-  status?: number;
-  type: string;
+function forwardLiveConsole(callId: string, level: ConsoleMessage["level"], args: string[], time: number) {
+  useBrowserStore.getState().add({
+    toolCallId: callId,
+    level,
+    args,
+    time,
+  });
+  useToolStore.getState().addConsoleLine(callId, level, args, time);
+}
   time: number;
 };
 
@@ -189,6 +189,13 @@ export function usePreviewBridge(
             data.callId,
             data.level,
             args,
+          const args = Array.isArray(data.args)
+            ? data.args.map((a: unknown) => String(a))
+            : [];
+          forwardLiveConsole(
+            data.callId,
+            data.level,
+            args,
             typeof data.time === "number" ? data.time : Date.now()
           );
         }
@@ -200,20 +207,13 @@ export function usePreviewBridge(
           col: data.col,
           time: Date.now(),
         });
-      } else if (data.kind === "network" && cbRef.current.onNetwork) {
-        cbRef.current.onNetwork({
-          url: data.url,
-          status: data.status,
-          type: data.type ?? "resource",
-          time: Date.now(),
-        });
       } else if (data.callId) {
         const resolver = pendingRef.current.get(data.callId);
         if (resolver) {
           pendingRef.current.delete(data.callId);
-          resolver({ result: data.result, error: data.error });
         }
       }
+    }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -231,7 +231,7 @@ export function usePreviewBridge(
         if (!iframe || !iframe.contentWindow) {
           resolve({
             error:
-              "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+              "Preview iframe not available. Wait for the live preview to load, then retry.",
           });
           return;
         }
@@ -267,10 +267,10 @@ export function usePreviewBridge(
             error: e instanceof Error ? e.message : "Failed to reach preview",
           });
         }
-      });
-    },
-    [iframeRef]
-  );
+     });
+   },
+   [iframeRef]
+ );
 
   const execute = React.useCallback<BridgeExecute>(
     async (tool, args, callId) => {
@@ -303,7 +303,7 @@ export function usePreviewBridge(
       if (!iframe) {
         return {
           error:
-            "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+            "Preview iframe not available. Wait for the live preview to load, then retry.",
         };
       }
 
@@ -311,7 +311,7 @@ export function usePreviewBridge(
       if (!stable && !iframe.contentWindow) {
         return {
           error:
-            "Preview iframe not available. Switch to Preview so the page can load, then retry.",
+            "Preview iframe not available. Wait for the live preview to load, then retry.",
         };
       }
 

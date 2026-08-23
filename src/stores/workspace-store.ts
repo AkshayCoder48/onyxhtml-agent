@@ -14,6 +14,7 @@ type WorkspaceState = {
   openTabs: string[];
   unsavedPaths: Set<string>;
   previewMode: "code" | "preview";
+  previewEntry: string | null;
   device: PreviewDevice;
   aiEditingFiles: Set<string>;
   isDirty: boolean;
@@ -30,10 +31,12 @@ type WorkspaceState = {
   updateFileContent: (path: string, content: string) => void;
   markSaved: (path: string) => void;
   markUnsaved: (path: string) => void;
+  markAllSaved: () => void;
   addFile: (path: string, content: string, isBinary?: boolean) => void;
   removeFile: (path: string) => void;
   renameFile: (from: string, to: string) => void;
   setPreviewMode: (m: "code" | "preview") => void;
+  setPreviewEntry: (path: string | null) => void;
   setDevice: (d: PreviewDevice) => void;
   setAiEditing: (path: string, editing: boolean) => void;
   bumpPreview: () => void;
@@ -48,6 +51,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   openTabs: [],
   unsavedPaths: new Set<string>(),
   previewMode: "code",
+  previewEntry: null,
   device: "desktop",
   aiEditingFiles: new Set<string>(),
   isDirty: false,
@@ -64,6 +68,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       unsavedPaths: new Set<string>(),
       aiEditingFiles: new Set<string>(),
       isDirty: false,
+      previewEntry: null,
     }),
 
   clearWorkspace: () =>
@@ -77,6 +82,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       unsavedPaths: new Set<string>(),
       aiEditingFiles: new Set<string>(),
       isDirty: false,
+      previewEntry: null,
     }),
 
   setFiles: (files) => {
@@ -142,6 +148,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return { unsavedPaths: unsaved, isDirty: true };
     }),
 
+  markAllSaved: () => set({ unsavedPaths: new Set<string>(), isDirty: false }),
+
   addFile: (path, content, isBinary = false) =>
     set((s) => ({
       files: { ...s.files, [path]: { content, isBinary } },
@@ -179,6 +187,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     }),
 
   setPreviewMode: (m) => set({ previewMode: m }),
+  setPreviewEntry: (path) => set({ previewEntry: path }),
   setDevice: (d) => set({ device: d }),
   setAiEditing: (path, editing) =>
     set((s) => {
