@@ -3,21 +3,12 @@
 import * as React from "react";
 import {
   ArrowLeft,
-  Save,
   Download,
   MoreHorizontal,
-  Check,
-  CircleAlert,
-  Eye,
-  Sparkles,
   Folder,
-  Hash,
-  ExternalLink,
-  Copy,
-  Trash2,
   Upload,
   Layers,
-  Command,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,37 +29,16 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import { useWorkspaceStore } from "@/stores/workspace-store";
-import { cn } from "@/lib/utils";
 
 export function WorkspaceHeader() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const setWorkspace = useWorkspaceStore((s) => s.setWorkspace);
   const clearWorkspace = useWorkspaceStore((s) => s.clearWorkspace);
   const activeFile = useWorkspaceStore((s) => s.activeFile);
-  const unsavedPaths = useWorkspaceStore((s) => s.unsavedPaths);
-  const markSaved = useWorkspaceStore((s) => s.markSaved);
-  const files = useWorkspaceStore((s) => s.files);
-  const setPreviewMode = useWorkspaceStore((s) => s.setPreviewMode);
   const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
 
   const [editingName, setEditingName] = React.useState(false);
   const [nameValue, setNameValue] = React.useState("");
-
-  const fileUnsaved = activeFile ? unsavedPaths.has(activeFile) : false;
-
-  async function saveActiveFile() {
-    if (!workspace || !activeFile) return;
-    const entry = files[activeFile];
-    if (!entry) return;
-    try {
-      await api.putFile(workspace.id, activeFile, entry.content);
-      markSaved(activeFile);
-      await api.patchWorkspace(workspace.id, { activeFile });
-      toast.success("Saved", { description: activeFile });
-    } catch (e) {
-      toast.error("Save failed", { description: e instanceof Error ? e.message : undefined });
-    }
-  }
 
   async function downloadZip() {
     if (!workspace) return;
@@ -187,16 +157,8 @@ export function WorkspaceHeader() {
           {activeFile ? (
             <div className="flex items-center gap-2 rounded-full border bg-card px-3 py-1 shadow-sm">
               <span className="truncate font-mono text-xs text-muted-foreground">{activeFile}</span>
-              <span className={cn("flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium", fileUnsaved ? "bg-amber-500/10 text-amber-600" : "bg-emerald-500/10 text-emerald-600")}>
-                {fileUnsaved ? (
-                  <>
-                    <CircleAlert className="size-3" /> Unsaved
-                  </>
-                ) : (
-                  <>
-                    <Check className="size-3" /> Saved
-                  </>
-                )}
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">
+                Synced
               </span>
             </div>
           ) : (
@@ -205,25 +167,6 @@ export function WorkspaceHeader() {
         </div>
 
         <div className="flex items-center gap-1">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" onClick={saveActiveFile} disabled={!activeFile} className="size-8 rounded-full" aria-label="Save (Ctrl+S)">
-                <Save className="size-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Save (⌘S)</TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" onClick={() => setPreviewMode("preview")} aria-label="Switch to preview" className="h-8 gap-1.5 rounded-full px-3">
-                <Eye className="size-4" />
-                <span className="hidden text-xs sm:inline">Preview</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Switch to preview</TooltipContent>
-          </Tooltip>
-
           <Tooltip>
             <TooltipTrigger asChild>
               <Button variant="ghost" size="icon" onClick={downloadZip} className="size-8 rounded-full" aria-label="Download ZIP">
@@ -249,14 +192,8 @@ export function WorkspaceHeader() {
               <DropdownMenuItem onClick={importZip} className="gap-2">
                 <Upload className="size-4" /> Import ZIP
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => {
-                  setPreviewMode("preview");
-                  bumpPreview();
-                }}
-                className="gap-2"
-              >
-                <Eye className="size-4" /> Open Preview
+              <DropdownMenuItem onClick={() => bumpPreview()} className="gap-2">
+                Reload preview
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={deleteWorkspace} className="gap-2 text-destructive focus:text-destructive">

@@ -3,4 +3,4 @@
 // Prisma/SQLite). This re-export keeps all existing `import { db } from
 // "@/lib/db"` call sites working unchanged.
 
-export { db, ensureDbInitialized, resetStorage } from "./storage";
+export { db, ensureDbInitialized, resetStorage, flushStorage } from "./storage";

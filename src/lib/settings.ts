@@ -16,7 +16,40 @@ export function getSettingsSync(): AppSettings {
     const raw = window.localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_SETTINGS };
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
-    return { ...DEFAULT_SETTINGS, ...parsed };
+    const merged: AppSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    if (typeof merged.fontSize !== "number" || !Number.isFinite(merged.fontSize)) {
+      merged.fontSize = DEFAULT_SETTINGS.fontSize;
+    }
+    if (typeof merged.tabSize !== "number" || !Number.isFinite(merged.tabSize)) {
+      merged.tabSize = DEFAULT_SETTINGS.tabSize;
+    }
+    if (merged.theme !== "light" && merged.theme !== "dark" && merged.theme !== "system") {
+      merged.theme = DEFAULT_SETTINGS.theme;
+    }
+    if (
+      merged.defaultViewport !== "desktop" &&
+      merged.defaultViewport !== "tablet" &&
+      merged.defaultViewport !== "mobile"
+    ) {
+      merged.defaultViewport = DEFAULT_SETTINGS.defaultViewport;
+    }
+    if (
+      merged.previewRefreshBehavior !== "auto" &&
+      merged.previewRefreshBehavior !== "onsave" &&
+      merged.previewRefreshBehavior !== "manual"
+    ) {
+      merged.previewRefreshBehavior = DEFAULT_SETTINGS.previewRefreshBehavior;
+    }
+    merged.wordWrap = Boolean(merged.wordWrap);
+    merged.minimap = Boolean(merged.minimap);
+    merged.lineNumbers = Boolean(merged.lineNumbers);
+    merged.autoSave = true;
+    merged.formatOnSave = Boolean(merged.formatOnSave);
+    merged.autoReload = Boolean(merged.autoReload);
+    merged.consoleVisible = Boolean(merged.consoleVisible);
+    merged.errorOverlay = Boolean(merged.errorOverlay);
+    merged.openLinksExternally = Boolean(merged.openLinksExternally);
+    return merged;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -24,7 +57,7 @@ export function getSettingsSync(): AppSettings {
 
 export function saveSettingsSync(patch: Partial<AppSettings>): AppSettings {
   const current = getSettingsSync();
-  const next = { ...current, ...patch };
+  const next = { ...current, ...patch, autoSave: true };
   if (isBrowser()) {
     try {
       window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));

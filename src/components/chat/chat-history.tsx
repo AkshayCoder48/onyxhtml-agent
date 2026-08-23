@@ -55,6 +55,14 @@ export function ChatHistory() {
     enabled: !!wsId,
   });
 
+  React.useEffect(() => {
+    function onChanged() {
+      queryClient.invalidateQueries({ queryKey: ["chats", wsId] });
+    }
+    window.addEventListener("chats:changed", onChanged);
+    return () => window.removeEventListener("chats:changed", onChanged);
+  }, [queryClient, wsId]);
+
   const groups = React.useMemo(() => {
     const map: Record<"Today" | "Yesterday" | "Earlier", typeof data> = {
       Today: [],
@@ -156,7 +164,16 @@ export function ChatHistory() {
                           c.id === activeChatId && "border-violet-500/30 bg-violet-500/5 shadow-sm"
                         )}
                       >
-                        <button className="min-w-0 flex-1 text-left" onClick={() => setChatId(c.id)}>
+                        <button
+                          className="min-w-0 flex-1 text-left"
+                          onClick={() => {
+                            const state = useChatStore.getState();
+                            if (state.chatId && state.messages.length > 0) {
+                              void persistChatMessages(state.chatId, state.messages);
+                            }
+                            setChatId(c.id);
+                          }}
+                        >
                           <div className="truncate text-[13px] font-medium">{c.title || "Untitled chat"}</div>
                           <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground">
                             <span>{timeShort(c.updatedAt)}</span>

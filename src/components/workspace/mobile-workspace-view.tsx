@@ -19,18 +19,19 @@ import { BrowserTestPanel } from "@/components/preview/browser-test-panel";
 import { ChatHistory } from "@/components/chat/chat-history";
 import { ChatSearch } from "@/components/chat/chat-search";
 import { usePreviewBridge } from "@/hooks/use-preview-bridge";
+import { useInstantFileSync } from "@/hooks/use-instant-file-sync";
 import { cn } from "@/lib/utils";
 
-// Mobile workspace view: shows one of Code / Preview / AI / Files at a time,
-// with a bottom nav.
+function isAiView(view: string) {
+  return view === "ai";
+}
+
 export function MobileWorkspaceView() {
   const mobileView = useUIStore((s) => s.mobileView);
   const activeSidebarView = useUIStore((s) => s.activeSidebarView);
   const consoleOpen = useUIStore((s) => s.consoleOpen);
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
-  const previewMode = useWorkspaceStore((s) => s.previewMode);
-  const setPreviewMode = useWorkspaceStore((s) => s.setPreviewMode);
-  const setActiveSidebarView = useUIStore((s) => s.setActiveSidebarView);
+  useInstantFileSync();
 
   const [consoleMessages, setConsoleMessages] = React.useState<PreviewConsoleMessage[]>([]);
   const [pageErrors, setPageErrors] = React.useState<PreviewError[]>([]);
@@ -50,56 +51,51 @@ export function MobileWorkspaceView() {
     setNetwork([]);
   }, [previewNonce]);
 
-  // When mobile view changes, ensure related state is consistent
-  React.useEffect(() => {
-    if (mobileView === "code") setPreviewMode("code");
-    if (mobileView === "preview") setPreviewMode("preview");
-    if (mobileView === "files") setActiveSidebarView("files");
-  }, [mobileView, setPreviewMode, setActiveSidebarView]);
+  const showAi = isAiView(mobileView);
+
+  const sidePanel = (() => {
+    switch (activeSidebarView) {
+      case "browser":
+        return <BrowserTestPanel />;
+      case "history":
+        return <ChatHistory />;
+      case "search":
+        return <ChatSearch />;
+      default:
+        return <FileExplorer />;
+    }
+  })();
 
   return (
     <div className="flex h-full flex-col">
       <WorkspaceHeader />
-      {(mobileView === "code" || mobileView === "preview") && <WorkspaceToolbar />}
 
       <div className="relative min-h-0 flex-1">
-        {mobileView === "code" && (
-          <div className="absolute inset-0">
+        {/* Files + Code + Preview stay mounted so edits, iframe, and tools survive tab switches. */}
+        <div
+          className={cn("absolute inset-0 flex flex-col", showAi && "pointer-events-none opacity-0")}
+          aria-hidden={showAi}
+        >
+          <WorkspaceToolbar />
+          <div className="h-[26%] min-h-[96px] shrink-0 border-b">{sidePanel}</div>
+          <div className="min-h-0 flex-1">
             <CodeEditor />
           </div>
-        )}
-        {/*
-          Preview pane — ALWAYS MOUNTED so the iframe + bridge script stay
-          alive for browser-tool execution even when the user is on the Code
-          or AI tab. We use opacity-0 + pointer-events-none (NOT display:none)
-          because display:none can prevent the iframe's srcdoc from being
-          parsed and the bridge script from executing in some browsers.
-        */}
-        <div
-          className={cn(
-            "absolute inset-0",
-            mobileView !== "preview" && "opacity-0 pointer-events-none"
-          )}
-          aria-hidden={mobileView !== "preview"}
-        >
-          <PreviewPane iframeRef={iframeRef} />
+          <div className="h-[34%] min-h-[140px] shrink-0 border-t">
+            <PreviewPane iframeRef={iframeRef} />
+          </div>
         </div>
-        {mobileView === "ai" && (
-          <div className="absolute inset-0">
-            <ChatPanel bridgeExecute={execute} />
-          </div>
-        )}
-        {mobileView === "files" && (
-          <div className="absolute inset-0">
-            {activeSidebarView === "files" && <FileExplorer />}
-            {activeSidebarView === "browser" && <BrowserTestPanel />}
-            {activeSidebarView === "history" && <ChatHistory />}
-            {activeSidebarView === "search" && <ChatSearch />}
-          </div>
-        )}
+
+        {/* Chat stays mounted so a live stream is never torn down. */}
+        <div
+          className={cn("absolute inset-0", !showAi && "pointer-events-none opacity-0")}
+          aria-hidden={!showAi}
+        >
+          <ChatPanel bridgeExecute={execute} />
+        </div>
       </div>
 
-      {consoleOpen && (mobileView === "code" || mobileView === "preview") && (
+      {consoleOpen && !showAi && (
         <div className="h-44 shrink-0">
           <ConsoleDrawer
             open={consoleOpen}

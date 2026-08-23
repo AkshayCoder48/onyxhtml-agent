@@ -65,7 +65,6 @@ export function Sidebar() {
   } = useUIStore();
   const setWorkspace = useWorkspaceStore((s) => s.setWorkspace);
   const setChatId = useChatStore((s) => s.setChatId);
-  const setPreviewMode = useWorkspaceStore((s) => s.setPreviewMode);
   const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
   const queryClient = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -114,7 +113,8 @@ export function Sidebar() {
 
   function pickView(view: SidebarView) {
     if (view === "preview") {
-      setPreviewMode("preview");
+      setActiveSidebarView("files");
+      bumpPreview();
       return;
     }
     if (view === "console") {
@@ -136,7 +136,7 @@ export function Sidebar() {
 
   const items: NavItem[] = [
     { id: "files", label: "Files", icon: Files, group: "WORKSPACE", action: () => pickView("files"), active: activeSidebarView === "files" },
-    { id: "preview", label: "Preview", icon: Eye, group: "WORKSPACE", action: () => pickView("preview"), active: useWorkspaceStore.getState().previewMode === "preview" },
+    { id: "preview", label: "Preview", icon: Eye, group: "WORKSPACE", action: () => pickView("preview"), active: false },
     { id: "browser", label: "Browser", icon: Globe, group: "WORKSPACE", action: () => pickView("browser"), active: activeSidebarView === "browser" },
     { id: "console", label: "Console", icon: Terminal, group: "WORKSPACE", action: () => pickView("console"), active: useUIStore.getState().consoleOpen },
     { id: "new-chat", label: "New Chat", icon: MessageSquarePlus, group: "CHAT", action: handleNewChat },

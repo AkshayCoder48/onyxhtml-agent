@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { Sparkles, FileText, FileCode, Zap, AlertCircle, Check, Save } from "lucide-react";
+import { Sparkles, FileText, FileCode, Check } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useWorkspaceStore } from "@/stores/workspace-store";
@@ -214,8 +214,6 @@ export function CodeEditor() {
   const updateFileContent = useWorkspaceStore((s) => s.updateFileContent);
   const aiEditingFiles = useWorkspaceStore((s) => s.aiEditingFiles);
   const workspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const unsavedPaths = useWorkspaceStore((s) => s.unsavedPaths);
-  const markSaved = useWorkspaceStore((s) => s.markSaved);
   const { settings } = useSettings();
   const { resolvedTheme } = useTheme();
 
@@ -264,25 +262,6 @@ export function CodeEditor() {
     setTheme(resolvedTheme === "dark" ? "dark" : "light");
   }, [resolvedTheme]);
 
-  const saveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  React.useEffect(() => {
-    if (!workspaceId || !activeFile) return;
-    if (!settings.autoSave) return;
-    if (!unsavedPaths.has(activeFile)) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        const entry = files[activeFile];
-        if (!entry) return;
-        await api.putFile(workspaceId, activeFile, entry.content);
-        markSaved(activeFile);
-      } catch {}
-    }, 800);
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-    };
-  }, [files, activeFile, workspaceId, settings.autoSave, unsavedPaths, markSaved]);
-
   const lintExtension = React.useMemo(
     () => buildLinter(activeFile),
     [activeFile]
@@ -316,18 +295,13 @@ export function CodeEditor() {
         }
       }
 
-      try {
-        await api.putFile(workspaceId, activeFile, content);
-        markSaved(activeFile);
-        await api.patchWorkspace(workspaceId, { activeFile });
-        toast.success("Saved", { description: activeFile });
-      } catch (e) {
-        toast.error("Save failed", {
-          description: e instanceof Error ? e.message : undefined,
-        });
+      updateFileContent(activeFile, content);
+      if (workspaceId) {
+        await api.putFile(workspaceId, activeFile, content).catch(() => {});
+        await api.patchWorkspace(workspaceId, { activeFile }).catch(() => {});
       }
     },
-    [workspaceId, activeFile, settings.formatOnSave, markSaved]
+    [workspaceId, activeFile, settings.formatOnSave, updateFileContent]
   );
 
   const saveKeymap = React.useMemo(
@@ -463,7 +437,6 @@ export function CodeEditor() {
         col={cursor.col}
         language={detectLanguage(activeFile).toUpperCase()}
         tabSize={tabSize}
-        unsaved={unsavedPaths.has(activeFile)}
         aiEditing={aiEditing}
       />
     </div>
@@ -475,14 +448,12 @@ function StatusBar({
   col,
   language,
   tabSize,
-  unsaved,
   aiEditing,
 }: {
   line: number;
   col: number;
   language: string;
   tabSize: number;
-  unsaved: boolean;
   aiEditing?: boolean;
 }) {
   return (
@@ -503,15 +474,9 @@ function StatusBar({
             <Sparkles className="size-3" /> AI editing
           </Badge>
         )}
-        {unsaved ? (
-          <Badge variant="outline" className="h-5 gap-1 rounded-full border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-700">
-            <AlertCircle className="size-3" /> Unsaved
-          </Badge>
-        ) : (
-          <Badge variant="outline" className="h-5 gap-1 rounded-full border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-700">
-            <Check className="size-3" /> Saved
-          </Badge>
-        )}
+        <Badge variant="outline" className="h-5 gap-1 rounded-full border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-700">
+          <Check className="size-3" /> Synced
+        </Badge>
       </div>
     </div>
   );

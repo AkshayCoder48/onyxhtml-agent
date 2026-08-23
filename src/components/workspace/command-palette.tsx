@@ -4,7 +4,6 @@ import * as React from "react";
 import {
   FilePlus2,
   FolderPlus,
-  Save,
   Download,
   Eye,
   RefreshCw,
@@ -42,7 +41,6 @@ export function CommandPalette() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const openSettings = useUIStore((s) => s.openSettings);
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
-  const setPreviewMode = useWorkspaceStore((s) => s.setPreviewMode);
   const bumpPreview = useWorkspaceStore((s) => s.bumpPreview);
   const openTab = useWorkspaceStore((s) => s.openTab);
   const setActiveFile = useWorkspaceStore((s) => s.setActiveFile);
@@ -50,7 +48,6 @@ export function CommandPalette() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const setWorkspace = useWorkspaceStore((s) => s.setWorkspace);
   const setChatId = useChatStore((s) => s.setChatId);
-  const markSaved = useWorkspaceStore((s) => s.markSaved);
   const queryClient = useQueryClient();
   const providers = useProviderStore((s) => s.providers);
   const usable = providers.some(isProviderUsable);
@@ -60,20 +57,6 @@ export function CommandPalette() {
     queryFn: async () => (await api.listWorkspaces()).workspaces,
     enabled: open,
   });
-
-  async function saveActive() {
-    const id = wsId;
-    const path = useWorkspaceStore.getState().activeFile;
-    const entry = path ? files[path] : null;
-    if (!id || !path || !entry) return;
-    try {
-      await api.putFile(id, path, entry.content);
-      markSaved(path);
-      toast.success("Saved", { description: path });
-    } catch (e) {
-      toast.error("Save failed", { description: e instanceof Error ? e.message : undefined });
-    }
-  }
 
   async function newWorkspace() {
     try {
@@ -205,11 +188,14 @@ export function CommandPalette() {
                 <FolderPlus className="size-4" /> New folder
               </CommandItem>
               <CommandItem
-                value="save file"
-                onSelect={() => { void saveActive(); close(); }}
+                value="reload preview refresh"
+                onSelect={() => {
+                  bumpPreview();
+                  close();
+                  toast.success("Preview reloaded");
+                }}
               >
-                <Save className="size-4" /> Save file
-                <span className="ml-auto text-xs opacity-50">⌘S</span>
+                <RefreshCw className="size-4" /> Reload preview
               </CommandItem>
             </CommandGroup>
 
@@ -249,11 +235,11 @@ export function CommandPalette() {
               <CommandItem
                 value="open preview"
                 onSelect={() => {
-                  setPreviewMode("preview");
+                  bumpPreview();
                   close();
                 }}
               >
-                <Eye className="size-4" /> Open preview
+                <Eye className="size-4" /> Focus preview
               </CommandItem>
               <CommandItem
                 value="reload preview refresh"

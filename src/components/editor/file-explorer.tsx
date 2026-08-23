@@ -155,8 +155,12 @@ export function FileExplorer() {
     queryFn: async () => {
       if (!wsId) return null;
       const r = await api.listFiles(wsId);
-      setFiles(r.files);
-      setTree(r.tree);
+      const current = useWorkspaceStore.getState().files;
+      // Never clobber live editor/AI content if the workspace is already loaded.
+      if (Object.keys(current).length === 0) {
+        setFiles(r.files);
+        setTree(r.tree);
+      }
       return r;
     },
     enabled: !!wsId,

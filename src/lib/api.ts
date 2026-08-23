@@ -280,13 +280,10 @@ export const api = {
 
   putFile: async (id: string, path: string, content: string) => {
     const safe = safePath(path);
-    const existing = await db.file.findUnique({
+    const file = await db.file.upsert({
       where: { workspaceId_path: { workspaceId: id, path: safe } },
-    });
-    if (!existing) throw new Error("File not found");
-    const file = await db.file.update({
-      where: { id: existing.id as string },
-      data: { content },
+      update: { content },
+      create: { workspaceId: id, path: safe, content, isBinary: false },
     });
     await db.workspace.update({ where: { id }, data: { updatedAt: now() } }).catch(() => {});
     return { file: fileToDTO(file) };

@@ -110,16 +110,19 @@ export const useChatStore = create<ChatState>((set) => ({
   lastHeartbeatAt: null,
 
   setChatId: (id) =>
-    set({
-      chatId: id,
-      messages: [],
-      isStreaming: false,
-      streamingMessageId: null,
-      pendingBrowserTools: [],
-      agentStatus: "idle",
-      agentStatusMessage: null,
-      agentStatusAction: null,
-      lastHeartbeatAt: null,
+    set((s) => {
+      if (s.chatId === id) return s;
+      return {
+        chatId: id,
+        messages: [],
+        isStreaming: false,
+        streamingMessageId: null,
+        pendingBrowserTools: [],
+        agentStatus: "idle",
+        agentStatusMessage: null,
+        agentStatusAction: null,
+        lastHeartbeatAt: null,
+      };
     }),
 
   setMessages: (msgs) => set({ messages: msgs }),
