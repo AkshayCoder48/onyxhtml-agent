@@ -39,13 +39,8 @@ import {
 import { useWorkspaceStore } from "@/stores/workspace-store";
 import { useSettings } from "@/hooks/use-settings";
 import { findEntryFile } from "@/lib/files";
-import { DEVICE_SIZES } from "@/lib/types";
+import { DEVICE_SIZES, type PreviewDevice } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  assemblePreviewHtml,
-  resolvePreviewNavigate,
-  scrollPreviewToHash,
-} from "@/lib/preview/build-preview-doc";
 
 export type PreviewConsoleMessage = {
   level: "log" | "warn" | "error" | "info";
@@ -143,44 +138,7 @@ const BRIDGE_SCRIPT = `
     }
   } catch(e) { /* unsupported — ignore */ }
 
-  function pageUrl(){
-    try {
-      var h = window.location.hash || "";
-      return "https://preview.local/" + (window.__onyxEntry || "index.html") + h;
-    } catch (e) {
-      return "https://preview.local/";
-    }
-  }
-  function shouldTrapHref(href){
-    if (href == null) return false;
-    var s = String(href).trim();
-    if (!s || s.charAt(0) === "#") return false;
-    if (/^(mailto:|tel:|javascript:|data:|blob:)/i.test(s)) return false;
-    return true;
-  }
-  document.addEventListener("click", function(e){
-    if (e.defaultPrevented) return;
-    if (e.button !== 0) return;
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    var t = e.target;
-    var a = t && t.closest ? t.closest("a[href]") : null;
-    if (!a) return;
-    var href = a.getAttribute("href");
-    if (!shouldTrapHref(href)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    send({ kind: "navigate", href: href, target: a.getAttribute("target") || "" });
-  }, true);
-  document.addEventListener("submit", function(e){
-    var form = e.target;
-    if (!form || form.tagName !== "FORM") return;
-    var action = form.getAttribute("action");
-    if (action && /^(https?:|mailto:)/i.test(action)) return;
-    e.preventDefault();
-    send({ kind: "navigate", href: action || window.__onyxEntry || "index.html", form: true });
-  }, true);
-
-  function announceReady(){ send({ kind: "ready", readyState: document.readyState, url: pageUrl() }); }
+  function announceReady(){ send({ kind: "ready", readyState: document.readyState }); }
   announceReady();
   if (document.readyState !== "complete") {
     window.addEventListener("load", announceReady);
@@ -229,11 +187,14 @@ const BRIDGE_SCRIPT = `
       var $ = function(sel){ return document.querySelector(sel); };
       switch (tool) {
         case "open_page": {
-          var openHref = String(args.url || args.path || args.href || "");
-          if (openHref) send({ kind: "navigate", href: openHref, target: "" });
+          // The preview iframe always shows the workspace entry file, so
+          // "opening" a page is a no-op — we just confirm the page is ready
+          // and return the current URL/title. The 'url' arg (if any) is
+          // ignored because we can't navigate the sandboxed iframe to
+          // arbitrary URLs.
           result = {
             ok: true,
-            url: pageUrl(),
+            url: window.location.href,
             title: document.title || "",
             ready: document.readyState,
           };
@@ -379,7 +340,7 @@ const BRIDGE_SCRIPT = `
             links.push({ href: as[li].getAttribute("href") || "", text: (as[li].textContent || "").trim().slice(0, 80) });
           }
           result = {
-            url: pageUrl(),
+            url: window.location.href,
             title: document.title || "",
             readyState: document.readyState,
             text: bodyText.slice(0, 8000),
@@ -557,7 +518,7 @@ const BRIDGE_SCRIPT = `
         case "assert_url": {
           var expected = String(args.expected != null ? args.expected : "");
           var mode = args.match || "contains";
-          var actual = pageUrl();
+          var actual = window.location.href;
           var pass = false;
           if (mode === "exact") pass = actual === expected;
           else if (mode === "prefix") pass = actual.indexOf(expected) === 0;
@@ -1173,7 +1134,7 @@ const BRIDGE_SCRIPT = `
             failedChecks: qaFailed,
             errors: { page: errs.slice(-10), console: qaConsoleErrs.slice(-10), network: networkErrors.slice(-10) },
             title: qaTitle,
-            url: pageUrl(),
+            url: window.location.href,
             textPreview: qaText.slice(0, 500),
             suggestions: qaSuggestions,
             report: (qaFailed.length === 0 ? "PASS" : "FAIL") + " " + qaPassed.length + "/" + qaChecks.length + " checks." + (qaFailed.length ? " " + qaFailed.map(function(f){ return f.message; }).join("; ") : " All good.")
@@ -1196,7 +1157,62 @@ export function buildPreviewDoc(
   files: Record<string, { content: string; isBinary: boolean }>,
   entry: string
 ): string {
-  return assemblePreviewHtml(files, entry, BRIDGE_SCRIPT);
+  const html = files[entry]?.content ?? "";
+  if (!html) return "<!doctype html><html><body><p>No HTML to preview.</p></body></html>";
+
+  const inlinable = new Set(Object.keys(files));
+
+  // Inline <link rel="stylesheet" href="local.css">
+  let out = html.replace(
+    /<link\b[^>]*?rel=["']stylesheet["'][^>]*?>/gi,
+    (tag) => {
+      const m = tag.match(/href=["']([^"']+)["']/i);
+      if (!m) return tag;
+      const href = m[1];
+      if (/^https?:\/\//i.test(href) || href.startsWith("//") || href.startsWith("data:"))
+        return tag;
+      const path = href.replace(/^\.?\//, "");
+      if (!inlinable.has(path)) return tag;
+      const css = files[path]?.content ?? "";
+      return `<style data-src="${path}">\n${css}\n</style>`;
+    }
+  );
+
+  // Inline <script src="local.js">
+  out = out.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*?)><\/script>/gi, (tag, pre, src, post) => {
+    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+      return tag;
+    const path = src.replace(/^\.?\//, "");
+    if (!inlinable.has(path)) return tag;
+    const js = files[path]?.content ?? "";
+    const attrs = `${pre}${post}`.replace(/\s+/g, " ").trim();
+    return `<script ${attrs} data-src="${path}">\n${js}\n</script>`;
+  });
+
+  // Inline <img src="local.*"> for SVG / text (best-effort). For binary, we cannot
+  // embed directly without base64 — skip; the broken image will be reported by the bridge.
+  out = out.replace(/<img\b([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (tag, pre, src, post) => {
+    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+      return tag;
+    const path = src.replace(/^\.?\//, "");
+    if (!inlinable.has(path)) return tag;
+    const f = files[path];
+    if (!f || f.isBinary) return tag;
+    // Text content: only SVG can be inlined as a data URL
+    if (path.toLowerCase().endsWith(".svg")) {
+      const data = `data:image/svg+xml;utf8,${encodeURIComponent(f.content)}`;
+      return `<img ${pre} src="${data}" ${post} />`;
+    }
+    return tag;
+  });
+
+  // Inject bridge before </body> (or at the end of the document).
+  if (/<\/body>/i.test(out)) {
+    out = out.replace(/<\/body>/i, `<script>${BRIDGE_SCRIPT}</script></body>`);
+  } else {
+    out = `${out}<script>${BRIDGE_SCRIPT}</script>`;
+  }
+  return out;
 }
 
 type CustomSize = { width: number; height: number };
@@ -1239,61 +1255,11 @@ export function PreviewPane({
   }, [previewNonce]);
 
   const paths = React.useMemo(() => Object.keys(previewFiles), [previewFiles]);
-  const fallbackEntry = React.useMemo(() => findEntryFile(paths), [paths]);
-  const entry = previewEntry && previewFiles[previewEntry] ? previewEntry : fallbackEntry;
+  const entry = React.useMemo(() => findEntryFile(paths), [paths]);
   const doc = React.useMemo(
     () => (entry ? buildPreviewDoc(previewFiles, entry) : ""),
     [previewFiles, entry]
   );
-
-  React.useEffect(() => {
-    function onMessage(ev: MessageEvent) {
-      const data = ev.data as { source?: string; kind?: string; href?: string; target?: string } | null;
-      if (!data || data.source !== "preview" || data.kind !== "navigate") return;
-      const href = String(data.href || "");
-      if (!href) return;
-      const current = entry ?? "index.html";
-      const next = resolvePreviewNavigate(href, previewFiles, current);
-      if (next.external) {
-        if (settings.openLinksExternally || data.target === "_blank") {
-          window.open(next.external, "_blank", "noopener,noreferrer");
-        }
-        return;
-      }
-      if (next.entry && next.entry !== current) {
-        setPreviewEntry(next.entry);
-        useWorkspaceStore.getState().bumpPreview();
-        return;
-      }
-      if (next.samePageHash || next.hash) {
-        scrollPreviewToHash(iframeRef.current, next.samePageHash || next.hash);
-      }
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [entry, previewFiles, setPreviewEntry, settings.openLinksExternally, iframeRef]);
-
-  const lastRestoreRef = React.useRef(0);
-  React.useEffect(() => {
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-    const onLoad = () => {
-      try {
-        const win = iframe.contentWindow as (Window & { __onyxEntry?: string }) | null;
-        if (win && win.__onyxEntry) return;
-        const href = win?.location?.href ?? "";
-        if (!href || href === "about:srcdoc" || href.startsWith("about:")) return;
-      } catch {
-        // cross-origin after an escaped navigation
-      }
-      const now = Date.now();
-      if (now - lastRestoreRef.current < 500) return;
-      lastRestoreRef.current = now;
-      useWorkspaceStore.getState().bumpPreview();
-    };
-    iframe.addEventListener("load", onLoad);
-    return () => iframe.removeEventListener("load", onLoad);
-  }, [iframeRef, doc, previewNonce]);
 
   // Local custom-device state (not in the store — the segmented control still
   // drives `device`; `useCustom` overrides the size when true).
@@ -1381,6 +1347,31 @@ export function PreviewPane({
     />
   );
 
+  return (
+    <div ref={containerRef} className="flex h-full flex-col bg-muted/30">
+      {/* Toolbar */}
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b bg-background px-2">
+        {/* Back / Forward — placeholder nav buttons (no history yet). */}
+        <div className="hidden items-center gap-0.5 sm:flex">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            disabled
+            aria-label="Back"
+          >
+            <ArrowLeft className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            disabled
+            aria-label="Forward"
+          >
+            <ArrowRight className="size-3.5" />
+          </Button>
+        </div>
 
         {/* Reload */}
         <TooltipProvider delayDuration={300}>

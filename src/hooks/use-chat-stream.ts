@@ -15,11 +15,6 @@ import { db } from "@/lib/db";
 import { parseJSON, stringifyJSON } from "@/lib/settings";
 import { findEntryFile } from "@/lib/files";
 import { AGENT_MD_FILENAME } from "@/lib/agent-md";
-import {
-  firstUserText,
-  persistChatMessages,
-  titleFromText,
-} from "@/lib/chat-persist";
 import type {
   WorkerChatMessage,
   WorkerFile,
@@ -264,29 +259,14 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
         files?: WorkerFile[];
       };
       if (anyEv.type === "persist") {
-        const state = useChatStore.getState();
-        const mid = state.streamingMessageId;
+        const mid = useChatStore.getState().streamingMessageId;
         if (mid && anyEv.segments) {
           db.message
             .update({
               where: { id: mid },
               data: { segments: stringifyJSON(anyEv.segments) },
             })
-            .catch(() => {
-              db.message
-                .create({
-                  data: {
-                    id: mid,
-                    chatId: state.chatId ?? "",
-                    role: "assistant",
-                    segments: stringifyJSON(anyEv.segments),
-                  },
-                })
-                .catch(() => {});
-            });
-        }
-        if (state.chatId) {
-          void persistChatMessages(state.chatId, state.messages);
+            .catch(() => {});
         }
       }
       if ((anyEv.type === "persist" || anyEv.type === "files-snapshot") && anyEv.files) {
@@ -556,24 +536,8 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
           toast.error("AI request failed", { description: msg });
         }
       } finally {
-        const live = useChatStore.getState();
-        if (live.chatId) {
-          const text = firstUserText(live.messages);
-          if (text) {
-            const row = await db.chat.findUnique({ where: { id: live.chatId } }).catch(() => null);
-            if (row && (!row.title || row.title === "New Chat")) {
-              await db.chat.update({ where: { id: live.chatId }, data: { title: titleFromText(text) } }).catch(() => {});
-            }
-          }
-          await persistChatMessages(live.chatId, live.messages);
-        }
         stopStreaming();
         abortRef.current = null;
-        try {
-          window.dispatchEvent(new CustomEvent("chats:changed"));
-        } catch {
-          // ignore
-        }
       }
     },
     [
@@ -651,18 +615,15 @@ export function useChatStream(bridge: { execute: Bridge["execute"] }) {
         toast.error("AI regenerate failed", { description: msg });
       }
     } finally {
-      const live = useChatStore.getState();
-      if (live.chatId) await persistChatMessages(live.chatId, live.messages);
       stopStreaming();
       abortRef.current = null;
-      try {
-        window.dispatchEvent(new CustomEvent("chats:changed"));
-      } catch {
-        // ignore
-      }
     }
   }, [chatId, appendMessage, startStreaming, stopStreaming, addErrorSegment, buildWorkerInput, worker, consumeAndRun, setMessages, toolReset, fileStreamReset, browserReset]);
 
+  const stop = React.useCallback(() => {
+    abortRef.current?.stop();
+    stopStreaming();
+  }, [stopStreaming]);
 
   React.useEffect(() => {
     function onRegenerate() { void regenerate(); }
