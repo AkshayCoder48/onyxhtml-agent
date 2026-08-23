@@ -7,15 +7,22 @@ import {
   Paperclip,
   AtSign,
   Settings as SettingsIcon,
-  Loader2,
-  Sparkles,
   Command,
   FileText,
   Hash,
-  Zap,
-  Plus,
   X,
+  Mic,
+  MicOff,
+  Zap,
+  Palette,
+  Bug,
+  Wand2,
+  Layout,
+  Search,
+  QrCode,
   Image as ImageIcon,
+  Sparkles,
+  Code2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,6 +46,24 @@ import { useUIStore } from "@/stores/ui-store";
 import { useProviders } from "@/hooks/use-providers";
 import { useProviderStore, isProviderUsable, activeModelLabel } from "@/stores/provider-store";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+
+const SLASH_COMMANDS = [
+  { cmd: "/fix", label: "Fix errors", desc: "Auto-fix console & QA errors", prompt: "Fix all console errors and QA issues. Run qa_suite after." },
+  { cmd: "/responsive", label: "Make responsive", desc: "Fix mobile layout", prompt: "Make the current page fully responsive. Check with test_responsive_layout and fix overflow." },
+  { cmd: "/a11y", label: "Fix accessibility", desc: "Run a11y audit & fix", prompt: "Run accessibility audit and fix all issues: missing alt, labels, contrast." },
+  { cmd: "/seo", label: "Fix SEO", desc: "Add meta, OG, headings", prompt: "Audit SEO: title, meta description, headings, alt tags, OG tags. Fix all." },
+  { cmd: "/plan", label: "Create plan", desc: "Plan before coding", prompt: "Create a plan for the next task using create_plan tool before coding." },
+  { cmd: "/palette", label: "Generate palette", desc: "Generate color palette", prompt: "Generate a color palette for this project using generate_palette and apply to CSS variables." },
+  { cmd: "/qr", label: "Add QR code", desc: "Generate QR code", prompt: "Generate a QR code for the site URL using generate_qr and add to page." },
+  { cmd: "/outline", label: "Outline file", desc: "Get file outline", prompt: "Use read_file_outline to show me the structure of the current file." },
+  { cmd: "/symbols", label: "List symbols", desc: "Find classes/ids", prompt: "Use get_file_symbols to list all classes, ids, and symbols in current file." },
+  { cmd: "/unused", label: "Find unused CSS", desc: "Dead code check", prompt: "Find unused CSS with find_unused_css and remove it." },
+  { cmd: "/validate", label: "Validate HTML", desc: "Check for errors", prompt: "Validate current HTML file with validate_html and fix errors." },
+  { cmd: "/deps", label: "Dependency graph", desc: "Show file dependencies", prompt: "Show dependency graph using get_dependency_graph." },
+  { cmd: "/checkpoint", label: "Save checkpoint", desc: "Save version", prompt: "Save a checkpoint with checkpoint tool." },
+  { cmd: "/ask", label: "Ask user", desc: "Clarify intent", prompt: "If my request is vague, use ask_user tool to clarify." },
+];
 
 export function ChatPromptBox({
   onSend,
@@ -51,6 +76,9 @@ export function ChatPromptBox({
 }) {
   const [value, setValue] = React.useState("");
   const [attachedFiles, setAttachedFiles] = React.useState<string[]>([]);
+  const [showSlash, setShowSlash] = React.useState(false);
+  const [slashFilter, setSlashFilter] = React.useState("");
+  const [isListening, setIsListening] = React.useState(false);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const openSettings = useUIStore((s) => s.openSettings);
   const activeFile = useWorkspaceStore((s) => s.activeFile);
@@ -95,18 +123,33 @@ export function ChatPromptBox({
     };
   }, [onSend]);
 
+  // Slash command detection
+  React.useEffect(() => {
+    if (value.startsWith("/") && value.length <= 20) {
+      const filter = value.slice(1).toLowerCase();
+      setSlashFilter(filter);
+      setShowSlash(true);
+    } else {
+      setShowSlash(false);
+    }
+  }, [value]);
+
   function handleSend() {
     const v = value.trim();
     if (!v || isStreaming) return;
     onSend(v);
     setValue("");
     setAttachedFiles([]);
+    setShowSlash(false);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       handleSend();
+    }
+    if (e.key === "Escape" && showSlash) {
+      setShowSlash(false);
     }
   }
 
@@ -121,8 +164,64 @@ export function ChatPromptBox({
     reader.readAsText(file);
   }
 
+  const toggleVoice = () => {
+    if (!("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
+      toast.error("Voice input not supported in this browser");
+      return;
+    }
+    if (isListening) {
+      setIsListening(false);
+      return;
+    }
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setValue((prev) => prev + (prev ? " " : "") + transcript);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.start();
+  };
+
+  const filteredSlash = SLASH_COMMANDS.filter((c) => !slashFilter || c.cmd.includes(slashFilter) || c.label.toLowerCase().includes(slashFilter));
+
   return (
-    <div className="border-t bg-card/30 p-3 backdrop-blur">
+    <div className="relative border-t bg-card/30 p-3 backdrop-blur">
+      {showSlash && filteredSlash.length > 0 && (
+        <div className="absolute bottom-full left-3 right-3 mb-2 max-h-64 overflow-auto rounded-xl border bg-popover shadow-lg">
+          <div className="p-2">
+            <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Slash commands • {filteredSlash.length}</div>
+            {filteredSlash.map((c) => (
+              <button
+                key={c.cmd}
+                onClick={() => {
+                  setValue(c.prompt);
+                  setShowSlash(false);
+                  taRef.current?.focus();
+                }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-accent transition-colors"
+              >
+                <div className="flex size-7 items-center justify-center rounded-md bg-muted">
+                  <Zap className="size-3.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[12px] font-medium">{c.cmd}</span>
+                    <span className="text-[12px]">{c.label}</span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">{c.desc}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {attachedFiles.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {attachedFiles.map((f) => (
@@ -143,7 +242,7 @@ export function ChatPromptBox({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={usable ? "Ask AI to edit your website…" : "Configure AI provider to start…"}
+          placeholder={usable ? "Ask AI to edit… or type / for commands" : "Configure AI provider to start…"}
           className="relative min-h-[48px] resize-none border-0 bg-transparent px-4 py-3 text-[14px] leading-relaxed shadow-none focus-visible:ring-0 placeholder:text-muted-foreground/60"
         />
 
@@ -155,11 +254,12 @@ export function ChatPromptBox({
                   <Paperclip className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="rounded-xl">
+              <DropdownMenuContent align="start" className="rounded-xl w-56">
                 <DropdownMenuItem
                   onSelect={() => {
                     const input = document.createElement("input");
                     input.type = "file";
+                    input.accept = ".html,.css,.js,.json,.md,.txt";
                     input.onchange = () => {
                       const f = input.files?.[0];
                       if (f) attachFile(f);
@@ -183,6 +283,13 @@ export function ChatPromptBox({
                   className="gap-2"
                 >
                   <Hash className="size-4" /> Add {activeFile ? activeFile : "file"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue((v) => v + " Use read_file_outline to get outline.")}>
+                  <Search className="size-4" /> Outline current file
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue((v) => v + " Use find_unused_css to find dead CSS.")}>
+                  <Code2 className="size-4" /> Find unused CSS
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -209,6 +316,45 @@ export function ChatPromptBox({
                       <FileText className="size-3" /> {p}
                     </DropdownMenuItem>
                   ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="icon" className={cn("size-8 rounded-full", isListening && "bg-red-500/10 text-red-600")} onClick={toggleVoice} aria-label="Voice input">
+                    {isListening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{isListening ? "Stop listening" : "Voice input (free, Web Speech API)"}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 gap-1.5 rounded-full text-xs">
+                  <Zap className="size-3" /> Free Tools
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="rounded-xl w-56">
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Generate a color palette for coffee shop mood using generate_palette")}>
+                  <Palette className="size-4" /> Generate palette
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Generate a QR code for https://example.com using generate_qr")}>
+                  <QrCode className="size-4" /> Generate QR
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Validate HTML file index.html using validate_html")}>
+                  <Bug className="size-4" /> Validate HTML
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Find unused CSS and remove it using find_unused_css")}>
+                  <Wand2 className="size-4" /> Clean unused CSS
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Show dependency graph using get_dependency_graph")}>
+                  <Layout className="size-4" /> Dependency graph
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onSelect={() => setValue("Get images info and fonts in use using get_images_info and get_fonts_in_use")}>
+                  <ImageIcon className="size-4" /> Audit assets
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
@@ -269,7 +415,7 @@ export function ChatPromptBox({
 
       <div className="mt-2 flex items-center justify-center gap-2 text-[11px] text-muted-foreground">
         <Command className="size-3" />
-        <span>⌘/Ctrl + Enter to send • Shift+Enter for new line</span>
+        <span>⌘/Ctrl + Enter to send • / for commands • 🎤 voice</span>
       </div>
     </div>
   );

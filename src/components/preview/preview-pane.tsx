@@ -144,6 +144,77 @@ const BRIDGE_SCRIPT = `
     window.addEventListener("load", announceReady);
   }
 
+  // Inspect mode - highlight elements on hover and report clicks
+  var inspectActive = false;
+  var inspectOverlay = null;
+  var lastInspectEl = null;
+  function createInspectOverlay() {
+    if (inspectOverlay) return inspectOverlay;
+    var div = document.createElement("div");
+    div.style.cssText = "position:fixed;pointer-events:none;z-index:999999;border:2px solid #8b5cf6;background:rgba(139,92,246,0.15);display:none;";
+    document.body.appendChild(div);
+    inspectOverlay = div;
+    return div;
+  }
+  function enableInspect() {
+    inspectActive = true;
+    createInspectOverlay();
+    document.body.style.cursor = "crosshair";
+    send({ kind: "inspect-enabled" });
+  }
+  function disableInspect() {
+    inspectActive = false;
+    if (inspectOverlay) inspectOverlay.style.display = "none";
+    document.body.style.cursor = "";
+    lastInspectEl = null;
+  }
+  document.addEventListener("mousemove", function(e) {
+    if (!inspectActive) return;
+    var el = document.elementFromPoint(e.clientX, e.clientY);
+    if (!el || el === inspectOverlay) return;
+    lastInspectEl = el;
+    var rect = el.getBoundingClientRect();
+    var ov = createInspectOverlay();
+    ov.style.display = "block";
+    ov.style.left = rect.left + "px";
+    ov.style.top = rect.top + "px";
+    ov.style.width = rect.width + "px";
+    ov.style.height = rect.height + "px";
+  }, true);
+  document.addEventListener("click", function(e) {
+    if (!inspectActive) return;
+    e.preventDefault();
+    e.stopPropagation();
+    var el = lastInspectEl || e.target;
+    if (!el) return;
+    var rect = el.getBoundingClientRect();
+    var attrs = {};
+    for (var i = 0; i < el.attributes.length; i++) {
+      var at = el.attributes[i];
+      attrs[at.name] = at.value;
+    }
+    var selector = el.tagName.toLowerCase();
+    if (el.id) selector += "#" + el.id;
+    else if (el.className && typeof el.className === "string") {
+      var cls = el.className.trim().split(/\s+/).slice(0,2).join(".");
+      if (cls) selector += "." + cls;
+    }
+    send({
+      kind: "inspect-pick",
+      tag: el.tagName,
+      selector: selector,
+      attributes: attrs,
+      text: (el.textContent || "").trim().slice(0,200),
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      computedStyle: styleSummary(el),
+      outerHTML: el.outerHTML.slice(0,2000)
+    });
+    disableInspect();
+  }, true);
+  document.addEventListener("keydown", function(e) {
+    if (e.key === "Escape" && inspectActive) disableInspect();
+  });
+
   // Host-side tools read these arrays directly (same-origin). Keep the
   // references stable so later console/error/network pushes are visible.
   window.__onyxPreview = { logs: logs, errs: errs, networkErrors: networkErrors };
@@ -180,6 +251,18 @@ const BRIDGE_SCRIPT = `
   window.addEventListener("message", async function(ev) {
     var data = ev.data;
     if (!data || data.source !== "workspace-host") return;
+    if (data.action === "inspect-mode") {
+      if (inspectActive) disableInspect(); else enableInspect();
+      return;
+    }
+    if (data.action === "inspect-enable") {
+      enableInspect();
+      return;
+    }
+    if (data.action === "inspect-disable") {
+      disableInspect();
+      return;
+    }
     if (data.action !== "browser-tool") return;
     var tool = data.tool, args = data.args || {}, callId = data.callId;
     var result, error;
@@ -1284,17 +1367,50 @@ export function PreviewPane({
     useWorkspaceStore.getState().bumpPreview();
   }
 
+  const [isInspecting, setIsInspecting] = React.useState(false);
+  const [pickedEl, setPickedEl] = React.useState<any>(null);
+
+  React.useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data;
+      if (!data || data.source !== "preview") return;
+      if (data.kind === "inspect-pick") {
+        setPickedEl(data);
+        setIsInspecting(false);
+        toast.success(`Picked <${data.tag.toLowerCase()}> ${data.selector}`);
+      } else if (data.kind === "inspect-enabled") {
+        setIsInspecting(true);
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   function handleInspect() {
-    toast.info("Inspect mode — click an element in the preview");
-    // Dispatch an event so other components (or a future inspector) can react.
+    const next = !isInspecting;
+    setIsInspecting(next);
+    if (next) toast.info("Inspect mode — hover and click an element in the preview (Esc to cancel)");
+    else toast.info("Inspect mode off");
     window.dispatchEvent(new CustomEvent("preview:inspect-mode"));
-    // Also notify the iframe in case its bridge wants to enter pick mode.
     const iframe = iframeRef.current;
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage(
-        { source: "workspace-host", action: "inspect-mode" },
+        { source: "workspace-host", action: next ? "inspect-enable" : "inspect-disable" },
         "*"
       );
+    }
+  }
+
+  function handlePickedAction(action: string) {
+    if (!pickedEl) return;
+    const sel = pickedEl.selector;
+    if (action === "edit") {
+      window.dispatchEvent(new CustomEvent("chat:set-prompt", { detail: `Edit the element ${sel} (${pickedEl.tag}) — current text: "${pickedEl.text}". OuterHTML: \n\`\`\`html\n${pickedEl.outerHTML}\n\`\`\`` }));
+    } else if (action === "style") {
+      window.dispatchEvent(new CustomEvent("chat:set-prompt", { detail: `Change styles for ${sel}. Current computed: ${JSON.stringify(pickedEl.computedStyle)}. How should I update it?` }));
+    } else if (action === "copy") {
+      navigator.clipboard.writeText(pickedEl.outerHTML);
+      toast.success("Copied outerHTML");
     }
   }
 
@@ -1349,6 +1465,30 @@ export function PreviewPane({
 
   return (
     <div ref={containerRef} className="flex h-full flex-col bg-muted/30">
+      {isInspecting && (
+        <div className="flex h-8 shrink-0 items-center justify-center gap-2 bg-violet-600 px-3 text-xs font-medium text-white">
+          <SearchIcon className="size-3.5" /> Inspect mode — Click any element to pick it • Press Esc to cancel
+          <Button size="sm" variant="secondary" className="ml-2 h-6 rounded-full text-xs" onClick={() => handleInspect()}>Exit</Button>
+        </div>
+      )}
+      {pickedEl && (
+        <div className="flex shrink-0 flex-col gap-2 border-b bg-card p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-violet-500/10 px-2 py-0.5 font-mono text-[11px] text-violet-700">&lt;{pickedEl.tag.toLowerCase()}&gt;</span>
+              <span className="font-mono text-[12px]">{pickedEl.selector}</span>
+              <span className="text-[11px] text-muted-foreground">{Math.round(pickedEl.rect.width)}×{Math.round(pickedEl.rect.height)}</span>
+            </div>
+            <Button size="sm" variant="ghost" className="h-6 rounded-full text-[11px]" onClick={() => setPickedEl(null)}>✕</Button>
+          </div>
+          <div className="flex gap-1.5">
+            <Button size="sm" className="h-7 rounded-full text-xs" onClick={() => handlePickedAction("edit")}>✏️ Edit with AI</Button>
+            <Button size="sm" variant="outline" className="h-7 rounded-full text-xs" onClick={() => handlePickedAction("style")}>🎨 Change style</Button>
+            <Button size="sm" variant="outline" className="h-7 rounded-full text-xs" onClick={() => handlePickedAction("copy")}>📋 Copy HTML</Button>
+          </div>
+          <div className="max-h-24 overflow-auto rounded bg-muted p-2 font-mono text-[11px]">{pickedEl.outerHTML.slice(0, 500)}</div>
+        </div>
+      )}
       {/* Toolbar */}
       <div className="flex h-10 shrink-0 items-center gap-1 border-b bg-background px-2">
         {/* Back / Forward — placeholder nav buttons (no history yet). */}

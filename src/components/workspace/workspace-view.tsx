@@ -26,6 +26,11 @@ import { ChatSearch } from "@/components/chat/chat-search";
 import { usePreviewBridge, type BridgeExecute } from "@/hooks/use-preview-bridge";
 import { useSettings } from "@/hooks/use-settings";
 import { useInstantFileSync } from "@/hooks/use-instant-file-sync";
+import { useAutoCheckpoint } from "@/hooks/use-auto-checkpoint";
+import { useQaLoop } from "@/hooks/use-qa-loop";
+import { ProblemsPanel } from "@/components/editor/problems-panel";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Bug, Folder } from "lucide-react";
 
 export function WorkspaceView() {
   const activeSidebarView = useUIStore((s) => s.activeSidebarView);
@@ -33,6 +38,8 @@ export function WorkspaceView() {
   const setConsoleOpen = useUIStore((s) => s.setConsoleOpen);
   const { settings } = useSettings();
   useInstantFileSync();
+  useAutoCheckpoint();
+  useQaLoop();
 
   const [consoleMessages, setConsoleMessages] = React.useState<PreviewConsoleMessage[]>([]);
   const [pageErrors, setPageErrors] = React.useState<PreviewError[]>([]);
@@ -64,7 +71,16 @@ export function WorkspaceView() {
   const leftPanelContent = (() => {
     switch (activeSidebarView) {
       case "files":
-        return <FileExplorer />;
+        return (
+          <Tabs defaultValue="files" className="flex h-full flex-col">
+            <TabsList className="mx-2 mt-2 h-8 w-auto justify-start rounded-full">
+              <TabsTrigger value="files" className="gap-1 rounded-full text-xs"><Folder className="size-3" /> Files</TabsTrigger>
+              <TabsTrigger value="problems" className="gap-1 rounded-full text-xs"><Bug className="size-3" /> Problems</TabsTrigger>
+            </TabsList>
+            <TabsContent value="files" className="m-0 flex-1 overflow-hidden"><FileExplorer /></TabsContent>
+            <TabsContent value="problems" className="m-0 flex-1 overflow-hidden"><ProblemsPanel /></TabsContent>
+          </Tabs>
+        );
       case "browser":
         return <BrowserTestPanel />;
       case "history":

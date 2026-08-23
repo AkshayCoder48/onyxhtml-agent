@@ -180,6 +180,42 @@ export type ToolName =
   | "replace_content"
   | "create_folder"
   | "search_files"
+  // ---- New coding-agent tools ----
+  | "read_file_lines"
+  | "read_file_outline"
+  | "get_file_symbols"
+  | "find_symbol"
+  | "get_file_stats"
+  | "edit_css_rule"
+  | "add_css_rule"
+  | "remove_css_rule"
+  | "rename_class"
+  | "rename_id"
+  | "extract_component"
+  | "find_unused_css"
+  | "find_broken_links"
+  | "get_dependency_graph"
+  | "validate_html"
+  | "validate_css"
+  | "batch_edit"
+  | "batch_create"
+  | "get_relevant_files"
+  | "search_class_usage"
+  | "get_html_structure"
+  | "create_plan"
+  | "update_plan"
+  | "ask_user"
+  | "checkpoint"
+  | "list_checkpoints"
+  | "restore_checkpoint"
+  | "get_computed_styles"
+  | "get_css_variables"
+  | "take_element_screenshot"
+  | "generate_qr"
+  | "generate_palette"
+  | "optimize_image"
+  | "get_images_info"
+  | "get_fonts_in_use"
   | "open_page"
   | "reload_page"
   | "click"
@@ -240,6 +276,41 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   replace_content: "Replace content",
   create_folder: "Create folder",
   search_files: "Search files",
+  read_file_lines: "Read lines",
+  read_file_outline: "Outline",
+  get_file_symbols: "Symbols",
+  find_symbol: "Find symbol",
+  get_file_stats: "File stats",
+  edit_css_rule: "Edit CSS rule",
+  add_css_rule: "Add CSS rule",
+  remove_css_rule: "Remove CSS rule",
+  rename_class: "Rename class",
+  rename_id: "Rename id",
+  extract_component: "Extract component",
+  find_unused_css: "Unused CSS",
+  find_broken_links: "Broken links",
+  get_dependency_graph: "Dependency graph",
+  validate_html: "Validate HTML",
+  validate_css: "Validate CSS",
+  batch_edit: "Batch edit",
+  batch_create: "Batch create",
+  get_relevant_files: "Relevant files",
+  search_class_usage: "Class usage",
+  get_html_structure: "HTML structure",
+  create_plan: "Create plan",
+  update_plan: "Update plan",
+  ask_user: "Ask user",
+  checkpoint: "Checkpoint",
+  list_checkpoints: "List checkpoints",
+  restore_checkpoint: "Restore checkpoint",
+  get_computed_styles: "Computed styles",
+  get_css_variables: "CSS variables",
+  take_element_screenshot: "Element screenshot",
+  generate_qr: "Generate QR",
+  generate_palette: "Generate palette",
+  optimize_image: "Optimize image",
+  get_images_info: "Images info",
+  get_fonts_in_use: "Fonts in use",
   open_page: "Open page",
   reload_page: "Reload page",
   click: "Click element",

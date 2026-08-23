@@ -570,6 +570,91 @@ async function runTool(
       return { links, count: links.length };
     }
 
+    case "get_computed_styles": {
+      const el = requireEl(doc, args.selector);
+      const cs = win.getComputedStyle(el as Element);
+      const props = ["display","position","color","backgroundColor","fontSize","fontFamily","margin","padding","width","height","border","opacity","visibility","zIndex","flexDirection","justifyContent","alignItems","gap"];
+      const computed: Record<string, string> = {};
+      for (const p of props) {
+        try { computed[p] = (cs as any)[p]; } catch {}
+      }
+      return { selector: String(args.selector), computed, full: { display: cs.display, color: cs.color, backgroundColor: cs.backgroundColor } };
+    }
+
+    case "get_css_variables": {
+      const vars: Record<string, string> = {};
+      try {
+        const styles = doc.querySelectorAll("style");
+        const re = /--([a-zA-Z0-9-_]+)\s*:\s*([^;]+);/g;
+        styles.forEach((s) => {
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(s.textContent || "")) !== null) vars[`--${m[1]}`] = m[2].trim();
+        });
+        // computed
+        const cs = win.getComputedStyle(doc.documentElement);
+        for (let i = 0; i < cs.length; i++) {
+          const prop = cs[i];
+          if (prop.startsWith("--")) vars[prop] = cs.getPropertyValue(prop).trim();
+        }
+      } catch {}
+      return { variables: vars, count: Object.keys(vars).length };
+    }
+
+    case "take_element_screenshot": {
+      const sel = String(args.selector);
+      return svgScreenshot(win, doc, sel, false);
+    }
+
+    case "get_images_info": {
+      const images: { src: string; alt: string; width: number; height: number; naturalWidth: number; naturalHeight: number; broken: boolean }[] = [];
+      doc.querySelectorAll("img").forEach((img) => {
+        const el = img as HTMLImageElement;
+        images.push({
+          src: el.src || el.getAttribute("src") || "",
+          alt: el.alt || "",
+          width: el.width,
+          height: el.height,
+          naturalWidth: el.naturalWidth,
+          naturalHeight: el.naturalHeight,
+          broken: el.naturalWidth === 0 && el.src !== "",
+        });
+      });
+      return { images, count: images.length };
+    }
+
+    case "get_fonts_in_use": {
+      const fonts = new Set<string>();
+      try {
+        doc.querySelectorAll("*").forEach((el) => {
+          const cs = win.getComputedStyle(el);
+          if (cs.fontFamily) fonts.add(cs.fontFamily);
+        });
+      } catch {}
+      return { fonts: Array.from(fonts).slice(0, 50), count: fonts.size };
+    }
+
+    case "generate_palette": {
+      const mood = String(args.mood || "modern").toLowerCase();
+      const palettes: Record<string, string[]> = {
+        "coffee shop": ["#3c2415","#a47551","#f5e6d3","#d4a574","#2c1810"],
+        minimal: ["#0f172a","#f8fafc","#e2e8f0","#94a3b8","#3b82f6"],
+        cyberpunk: ["#ff00ff","#00ffff","#0f0f0f","#ffea00","#ff0055"],
+        ocean: ["#0a192f","#64ffda","#8892b0","#112240","#e6f1ff"],
+        sunset: ["#ff6b6b","#feca57","#48dbfb","#1dd1a1","#5f27cd"],
+        forest: ["#2d5016","#618b25","#a4be7b","#e5d3b3","#285430"],
+        default: ["#7c3aed","#3b82f6","#06b6d4","#10b981","#f59e0b"],
+      };
+      const palette = palettes[mood] || palettes["default"];
+      return { mood, palette, name: mood };
+    }
+
+    case "generate_qr": {
+      const text = String(args.text || "");
+      // Return data for file creation, host will handle actual file creation via worker? But we can return SVG placeholder
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect width="200" height="200" fill="white"/><text x="100" y="100" text-anchor="middle" font-size="10">${text.slice(0,20)}</text></svg>`;
+      return { text, svg, dataUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}` };
+    }
+
     case "get_console_logs":
       return { logs: capture.logs };
 

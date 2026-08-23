@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { persistChatMessages } from "@/lib/chat-persist";
 
 function relativeDay(iso: string): "Today" | "Yesterday" | "Earlier" {
   const d = new Date(iso);

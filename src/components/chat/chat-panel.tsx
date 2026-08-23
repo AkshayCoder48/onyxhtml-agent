@@ -35,6 +35,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChatMessages } from "./chat-messages";
 import { AgentStatusBar } from "./agent-status-bar";
 import { ChatPromptBox } from "./prompt-box";
+import { AgentControls } from "./agent-controls";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import type { BridgeExecute } from "@/hooks/use-preview-bridge";
 import { useUIStore } from "@/stores/ui-store";
@@ -192,6 +193,7 @@ export function ChatPanel({
         onDelete={handleDelete}
         onOpenSettings={() => openSettings("providers")}
       />
+      <AgentControls />
       <ChatMessages />
       {isStreaming && (
         <div className="shrink-0 border-t bg-muted/20 px-3 py-2">

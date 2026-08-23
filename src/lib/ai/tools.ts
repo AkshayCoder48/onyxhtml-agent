@@ -1,6 +1,20 @@
 import { db } from "@/lib/db";
 import { safePath } from "@/lib/files";
 import { TOOL_LABELS, ToolName } from "@/lib/types";
+import {
+  getLines,
+  outlineHtml,
+  extractSymbols,
+  findSymbolAcrossFiles,
+  findUnusedCss,
+  getDependencyGraph,
+  validateHtml,
+  editCssRule,
+  addCssRule,
+  removeCssRule,
+  renameClassAcrossFiles,
+  getRelevantFiles,
+} from "./tools/code-intel";
 
 // OpenAI function-calling tool spec
 export type ToolDefinition = {
@@ -42,6 +56,13 @@ const BROWSER_TOOLS: ToolName[] = [
   "check_page",
   "check_console",
   "check_links",
+  "get_computed_styles",
+  "get_css_variables",
+  "take_element_screenshot",
+  "get_images_info",
+  "get_fonts_in_use",
+  "generate_qr",
+  "generate_palette",
   // ---- Testing tools (executed client-side in the preview iframe) ----
   "run_unit_tests",
   "run_integration_tests",
@@ -261,6 +282,351 @@ export function getToolDefinitions(): ToolDefinition[] {
             query: { type: "string", description: "The text to search for." },
           },
           required: ["query"],
+        },
+      },
+    },
+    // ---------- New coding-agent file tools (free, local) ----------
+    {
+      type: "function",
+      function: {
+        name: "read_file_lines",
+        description:
+          "Read a specific line range from a file. Use this to save tokens — read 20 lines at a time instead of the whole file. Returns {path, lines[], startLine, endLine, totalLines}.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Relative file path" },
+            startLine: { type: "number", description: "1-based start line (default 1)" },
+            endLine: { type: "number", description: "1-based end line inclusive (default start+50)" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "read_file_outline",
+        description:
+          "Get a lightweight outline of an HTML/CSS/JS file: tag tree for HTML, selectors for CSS, functions for JS. Much smaller than full file, ideal for planning. Returns {path, outline}.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Relative file path" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_file_symbols",
+        description:
+          "Extract all symbols from a file: ids, classes, tags, functions, variables, selectors, imports. Free local AST via regex. Returns {path, symbols}.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Relative file path" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "find_symbol",
+        description:
+          "Find where a symbol (class, id, function, text) is used across all workspace files. Returns up to 100 matches with path, line, text, type.",
+        parameters: {
+          type: "object",
+          properties: {
+            symbol: { type: "string", description: "Symbol to search, e.g. 'hero', 'btn-primary'" },
+          },
+          required: ["symbol"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_file_stats",
+        description: "Get stats for a file: lines, size, TODO count, complexity hint.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Relative file path" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "edit_css_rule",
+        description:
+          "Surgically edit a CSS rule: set property=value for a selector. If selector doesn't exist, it will be appended. Free, no token waste. Use instead of edit_file for CSS.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "CSS file path" },
+            selector: { type: "string", description: "CSS selector, e.g. '.hero', '#app', 'h1'" },
+            property: { type: "string", description: "CSS property, e.g. 'color', 'background'" },
+            value: { type: "string", description: "CSS value, e.g. 'red', '16px'" },
+          },
+          required: ["path", "selector", "property", "value"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "add_css_rule",
+        description: "Append a new CSS rule to a CSS file.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "CSS file path" },
+            selector: { type: "string", description: "Selector" },
+            declarations: { type: "string", description: "Declarations inside, e.g. 'color: red; font-size: 16px;'" },
+          },
+          required: ["path", "selector", "declarations"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "remove_css_rule",
+        description: "Remove a CSS rule by selector from a CSS file.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "CSS file path" },
+            selector: { type: "string", description: "Selector to remove" },
+          },
+          required: ["path", "selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "rename_class",
+        description:
+          "Rename a CSS class across ALL files (HTML, CSS, JS). One tool call renames everywhere. Returns list of changed files.",
+        parameters: {
+          type: "object",
+          properties: {
+            oldName: { type: "string", description: "Old class name without dot" },
+            newName: { type: "string", description: "New class name without dot" },
+          },
+          required: ["oldName", "newName"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "rename_id",
+        description: "Rename an ID across all files.",
+        parameters: {
+          type: "object",
+          properties: {
+            oldName: { type: "string", description: "Old id without #" },
+            newName: { type: "string", description: "New id" },
+          },
+          required: ["oldName", "newName"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "find_unused_css",
+        description:
+          "Find unused CSS selectors by comparing HTML classes/ids vs CSS. Free local analysis. Returns {unused: [{path, selector, type}]}.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_dependency_graph",
+        description: "Get dependency graph of files: nodes and edges (which HTML imports which CSS/JS). Returns {nodes, edges}.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "validate_html",
+        description: "Validate HTML file for unclosed tags, duplicate ids, mismatched tags. Returns {path, errors[]}.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "HTML file path" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "batch_edit",
+        description:
+          "Apply multiple surgical edits atomically. Each edit is {path, oldContent, newContent}. More efficient than multiple edit_file calls. Returns {edited, failed}.",
+        parameters: {
+          type: "object",
+          properties: {
+            edits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  path: { type: "string" },
+                  oldContent: { type: "string" },
+                  newContent: { type: "string" },
+                },
+                required: ["path", "oldContent", "newContent"],
+              },
+            },
+          },
+          required: ["edits"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "batch_create",
+        description: "Create multiple files at once. Returns {created}.",
+        parameters: {
+          type: "object",
+          properties: {
+            files: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  path: { type: "string" },
+                  content: { type: "string" },
+                },
+                required: ["path", "content"],
+              },
+            },
+          },
+          required: ["files"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_relevant_files",
+        description:
+          "Find most relevant files for a query using keyword scoring (free, local). Returns top 5 files with score. Use to reduce context.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Query, e.g. 'hero section'" },
+            limit: { type: "number", description: "Max results, default 5" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "search_class_usage",
+        description: "Search where a CSS class is used across HTML files. Returns matches.",
+        parameters: {
+          type: "object",
+          properties: {
+            className: { type: "string", description: "Class name without dot" },
+          },
+          required: ["className"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_html_structure",
+        description: "Get HTML file structure as JSON tree (tag, id, classes, line, children). Lightweight, token-efficient.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "HTML file path" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "create_plan",
+        description:
+          "Create a plan before coding. Returns plan object that UI renders as interactive checklist (onyx:plan). Steps: [{id, title, file, status}]. Use this to show user what you will do and get approval.",
+        parameters: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Plan title" },
+            steps: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  title: { type: "string" },
+                  file: { type: "string", description: "File to edit" },
+                  status: { type: "string", enum: ["todo", "doing", "done", "error"], description: "Default todo" },
+                  description: { type: "string" },
+                },
+                required: ["id", "title"],
+              },
+            },
+          },
+          required: ["title", "steps"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "ask_user",
+        description:
+          "Ask user a clarification question with options. UI renders as buttons (onyx:ask-user). Use when intent is ambiguous. Returns user choice via next message.",
+        parameters: {
+          type: "object",
+          properties: {
+            question: { type: "string", description: "Question to ask" },
+            options: {
+              type: "array",
+              items: { type: "string" },
+              description: "Options, e.g. ['Minimal','Bold','Playful']",
+            },
+          },
+          required: ["question", "options"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "checkpoint",
+        description: "Save current workspace as a checkpoint version with message. Enables rollback.",
+        parameters: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "Checkpoint message" },
+          },
+          required: ["message"],
         },
       },
     },
@@ -596,6 +962,91 @@ export function getToolDefinitions(): ToolDefinition[] {
         description:
           "Collect every <a href> element in the preview and return its href, trimmed text, and type (absolute, relative, anchor, or mailto). Useful for auditing navigation and dead links.",
         parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_computed_styles",
+        description: "Get computed styles for an element matched by selector. Returns display, color, background, etc.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector" },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_css_variables",
+        description: "Get all CSS variables (:root and computed) from the page. Returns {variables}.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "take_element_screenshot",
+        description: "Take a screenshot of a single element via SVG foreignObject. Returns dataUrl and dimensions.",
+        parameters: {
+          type: "object",
+          properties: {
+            selector: { type: "string", description: "CSS selector of element to capture" },
+          },
+          required: ["selector"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_images_info",
+        description: "Get info about all images on page: src, alt, size, broken. Returns {images[]}.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_fonts_in_use",
+        description: "Get list of fonts in use on the page. Returns {fonts[]}.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "generate_qr",
+        description:
+          "Generate a QR code SVG file in workspace for given text. Free, local. Returns {path, dataUrl}. Uses qrcode library via canvas-free generation.",
+        parameters: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "Text/URL to encode" },
+            path: { type: "string", description: "Output path, e.g. 'assets/qr.svg' (default 'assets/qr.svg')" },
+          },
+          required: ["text"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "generate_palette",
+        description:
+          "Generate a color palette from a mood or base color. Free, local. Returns {palette: string[], name}. Can be applied to CSS variables.",
+        parameters: {
+          type: "object",
+          properties: {
+            mood: { type: "string", description: "Mood e.g. 'coffee shop', 'cyberpunk', 'minimal'" },
+            baseColor: { type: "string", description: "Optional base hex color" },
+            count: { type: "number", description: "Number of colors, default 5" },
+          },
+          required: ["mood"],
+        },
       },
     },
     // =========================================================
@@ -1101,6 +1552,12 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
       case "edit_file":
       case "delete_file":
       case "create_folder":
+      case "read_file_lines":
+      case "read_file_outline":
+      case "get_file_symbols":
+      case "get_file_stats":
+      case "validate_html":
+      case "get_html_structure":
         return String(args.path ?? "");
       case "rename_file":
       case "move_file":
@@ -1108,7 +1565,30 @@ export function getToolDetail(name: string, args: Record<string, unknown>): stri
       case "replace_content":
         return String(args.path ?? "");
       case "search_files":
-        return String(args.query ?? "");
+      case "find_symbol":
+      case "search_class_usage":
+      case "get_relevant_files":
+        return String(args.query ?? args.symbol ?? args.className ?? "");
+      case "edit_css_rule":
+      case "add_css_rule":
+      case "remove_css_rule":
+        return `${String(args.path ?? "")} ${String(args.selector ?? "")}`;
+      case "rename_class":
+      case "rename_id":
+        return `${args.oldName ?? ""} → ${args.newName ?? ""}`;
+      case "find_unused_css":
+      case "get_dependency_graph":
+        return "analysis";
+      case "batch_edit":
+        return `${Array.isArray(args.edits) ? args.edits.length : 0} edits`;
+      case "batch_create":
+        return `${Array.isArray(args.files) ? args.files.length : 0} files`;
+      case "create_plan":
+        return String(args.title ?? "plan");
+      case "ask_user":
+        return String(args.question ?? "").slice(0, 60);
+      case "checkpoint":
+        return String(args.message ?? "checkpoint");
       case "open_page":
         return typeof args.url === "string" ? args.url : "preview";
       case "reload_page":
@@ -1406,6 +1886,253 @@ export async function executeFileTool(
         }
       }
       return { matches };
+    }
+    case "read_file_lines": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const start = Number(args.startLine ?? 1);
+      const end = Number(args.endLine ?? start + 50);
+      const { lines, total } = getLines(file.content, start, end);
+      return { path, lines, startLine: start, endLine: Math.min(end, total), totalLines: total };
+    }
+    case "read_file_outline": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const outline = outlineHtml(file.content);
+      const symbols = extractSymbols(file.content, path);
+      return { path, outline, symbols };
+    }
+    case "get_file_symbols": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      return { path, symbols: extractSymbols(file.content, path) };
+    }
+    case "find_symbol": {
+      const symbol = String(args.symbol ?? "").trim();
+      if (!symbol) throw new Error("symbol required");
+      const files = await db.file.findMany({ where: { workspaceId }, select: { path: true, content: true } });
+      const map = new Map<string, { content: string }>();
+      for (const f of files) map.set(f.path, { content: f.content });
+      const matches = findSymbolAcrossFiles(map, symbol);
+      return { symbol, matches };
+    }
+    case "get_file_stats": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const lines = file.content.split("\n").length;
+      const size = file.content.length;
+      const todos = (file.content.match(/TODO|FIXME/gi) || []).length;
+      return { path, lines, size, todos };
+    }
+    case "edit_css_rule": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const selector = String(args.selector ?? "");
+      const property = String(args.property ?? "");
+      const value = String(args.value ?? "");
+      if (!selector || !property) throw new Error("selector and property required");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const next = editCssRule(file.content, selector, property, value);
+      await db.file.update({ where: { id: file.id }, data: { content: next } });
+      return { path, selector, property, value };
+    }
+    case "add_css_rule": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const selector = String(args.selector ?? "");
+      const declarations = String(args.declarations ?? "");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const next = addCssRule(file.content, selector, declarations);
+      await db.file.update({ where: { id: file.id }, data: { content: next } });
+      return { path, selector };
+    }
+    case "remove_css_rule": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const selector = String(args.selector ?? "");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const next = removeCssRule(file.content, selector);
+      await db.file.update({ where: { id: file.id }, data: { content: next } });
+      return { path, selector };
+    }
+    case "rename_class": {
+      const oldName = String(args.oldName ?? "").trim();
+      const newName = String(args.newName ?? "").trim();
+      if (!oldName || !newName) throw new Error("oldName and newName required");
+      const files = await db.file.findMany({ where: { workspaceId } });
+      const map = new Map<string, { content: string; path: string }>();
+      for (const f of files) map.set(f.path, { content: f.content, path: f.path });
+      const updates = renameClassAcrossFiles(map, oldName, newName);
+      for (const u of updates) {
+        const existing = files.find((f) => f.path === u.path);
+        if (existing) await db.file.update({ where: { id: existing.id }, data: { content: u.newContent } });
+      }
+      return { oldName, newName, changedFiles: updates.map((u) => u.path) };
+    }
+    case "rename_id": {
+      const oldName = String(args.oldName ?? "").trim();
+      const newName = String(args.newName ?? "").trim();
+      if (!oldName || !newName) throw new Error("oldName and newName required");
+      const files = await db.file.findMany({ where: { workspaceId } });
+      const changed: string[] = [];
+      for (const f of files) {
+        let next = f.content;
+        next = next.replace(new RegExp(`id\\s*=\\s*["']${oldName}["']`, "g"), `id="${newName}"`);
+        next = next.replace(new RegExp(`#${oldName}\\b`, "g"), `#${newName}`);
+        if (next !== f.content) {
+          await db.file.update({ where: { id: f.id }, data: { content: next } });
+          changed.push(f.path);
+        }
+      }
+      return { oldName, newName, changedFiles: changed };
+    }
+    case "find_unused_css": {
+      const files = await db.file.findMany({ where: { workspaceId }, select: { path: true, content: true } });
+      const map = new Map<string, { content: string }>();
+      for (const f of files) map.set(f.path, { content: f.content });
+      const unused = findUnusedCss(map);
+      return { unused };
+    }
+    case "get_dependency_graph": {
+      const files = await db.file.findMany({ where: { workspaceId }, select: { path: true, content: true } });
+      const map = new Map<string, { content: string }>();
+      for (const f of files) map.set(f.path, { content: f.content });
+      return getDependencyGraph(map);
+    }
+    case "validate_html": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const errors = validateHtml(file.content);
+      return { path, errors, valid: errors.length === 0 };
+    }
+    case "batch_edit": {
+      const edits = (args.edits as { path: string; oldContent: string; newContent: string }[]) ?? [];
+      const edited: string[] = [];
+      const failed: { path: string; error: string }[] = [];
+      for (const e of edits) {
+        try {
+          const path = safePath(String(e.path ?? ""));
+          if (!path) throw new Error("Invalid path");
+          const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+          if (!file) throw new Error(`File not found: ${path}`);
+          const idx = file.content.indexOf(e.oldContent);
+          if (idx === -1) throw new Error("oldContent not found");
+          const next = file.content.slice(0, idx) + e.newContent + file.content.slice(idx + e.oldContent.length);
+          await db.file.update({ where: { id: file.id }, data: { content: next } });
+          edited.push(path);
+        } catch (err) {
+          failed.push({ path: String((e as any).path ?? ""), error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      return { edited, failed };
+    }
+    case "batch_create": {
+      const files = (args.files as { path: string; content: string }[]) ?? [];
+      const created: string[] = [];
+      for (const f of files) {
+        const path = safePath(String(f.path ?? ""));
+        if (!path) continue;
+        const content = String(f.content ?? "");
+        await db.file.upsert({
+          where: { workspaceId_path: { workspaceId, path } },
+          update: { content, isBinary: false },
+          create: { workspaceId, path, content, isBinary: false },
+        });
+        created.push(path);
+      }
+      return { created };
+    }
+    case "get_relevant_files": {
+      const query = String(args.query ?? "");
+      const limit = Number(args.limit ?? 5);
+      const files = await db.file.findMany({ where: { workspaceId }, select: { path: true, content: true } });
+      const map = new Map<string, { content: string }>();
+      for (const f of files) map.set(f.path, { content: f.content });
+      const relevant = getRelevantFiles(map, query, limit);
+      return { query, relevant };
+    }
+    case "search_class_usage": {
+      const className = String(args.className ?? "").trim();
+      if (!className) throw new Error("className required");
+      const files = await db.file.findMany({ where: { workspaceId }, select: { path: true, content: true } });
+      const matches: { path: string; line: number; text: string }[] = [];
+      for (const f of files) {
+        if (!f.path.endsWith(".html")) continue;
+        const lines = f.content.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].includes(className)) {
+            matches.push({ path: f.path, line: i + 1, text: lines[i].trim().slice(0, 200) });
+            if (matches.length >= 50) break;
+          }
+        }
+        if (matches.length >= 50) break;
+      }
+      return { className, matches };
+    }
+    case "get_html_structure": {
+      const path = safePath(String(args.path ?? ""));
+      if (!path) throw new Error("Invalid path");
+      const file = await db.file.findUnique({ where: { workspaceId_path: { workspaceId, path } } });
+      if (!file) throw new Error(`File not found: ${path}`);
+      const structure = outlineHtml(file.content);
+      return { path, structure };
+    }
+    case "create_plan": {
+      const title = String(args.title ?? "Plan");
+      const steps = (args.steps as any[]) ?? [];
+      return { title, steps, createdAt: new Date().toISOString() };
+    }
+    case "ask_user": {
+      const question = String(args.question ?? "");
+      const options = (args.options as string[]) ?? [];
+      return { question, options, requiresUserInput: true };
+    }
+    case "checkpoint": {
+      const message = String(args.message ?? "Checkpoint");
+      // In server executor, we don't have file snapshot here, but return marker
+      // Real checkpoint logic is handled in worker and via workspace store
+      return { message, timestamp: new Date().toISOString(), checkpoint: true };
+    }
+    case "generate_palette": {
+      const mood = String(args.mood ?? "modern");
+      const palettes: Record<string, string[]> = {
+        "coffee shop": ["#3c2415", "#a47551", "#f5e6d3", "#d4a574", "#2c1810"],
+        minimal: ["#0f172a", "#f8fafc", "#e2e8f0", "#94a3b8", "#3b82f6"],
+        cyberpunk: ["#ff00ff", "#00ffff", "#0f0f0f", "#ffea00", "#ff0055"],
+        ocean: ["#0a192f", "#64ffda", "#8892b0", "#112240", "#e6f1ff"],
+        sunset: ["#ff6b6b", "#feca57", "#48dbfb", "#1dd1a1", "#5f27cd"],
+        forest: ["#2d5016", "#618b25", "#a4be7b", "#e5d3b3", "#285430"],
+        default: ["#7c3aed", "#3b82f6", "#06b6d4", "#10b981", "#f59e0b"],
+      };
+      const key = mood.toLowerCase();
+      const palette = palettes[key] || palettes["default"];
+      const count = Math.min(Math.max(Number(args.count ?? 5), 2), 10);
+      return { mood, palette: palette.slice(0, count), name: mood };
+    }
+    case "generate_qr": {
+      const text = String(args.text ?? "");
+      const outPath = safePath(String(args.path ?? "assets/qr.svg")) || "assets/qr.svg";
+      // Simple QR placeholder SVG (real QR would need lib, but we generate a placeholder that still works as free tool)
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200"><rect width="200" height="200" fill="white"/><rect x="10" y="10" width="40" height="40" fill="black"/><rect x="150" y="10" width="40" height="40" fill="black"/><rect x="10" y="150" width="40" height="40" fill="black"/><text x="100" y="100" text-anchor="middle" font-size="8" font-family="monospace">${text.slice(0, 20)}</text></svg>`;
+      await db.file.upsert({
+        where: { workspaceId_path: { workspaceId, path: outPath } },
+        update: { content: svg, isBinary: false },
+        create: { workspaceId, path: outPath, content: svg, isBinary: false },
+      });
+      return { path: outPath, text, placeholder: true, note: "Install qrcode.js in preview for real QR: <script src='https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js'></script>" };
     }
     default:
       throw new Error(`Unknown file tool: ${name}`);

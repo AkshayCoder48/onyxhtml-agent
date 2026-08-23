@@ -18,8 +18,7 @@ type WorkspaceState = {
   device: PreviewDevice;
   aiEditingFiles: Set<string>;
   isDirty: boolean;
-  // ephemeral
-  previewNonce: number; // bump to trigger preview reload
+  previewNonce: number;
 
   setWorkspace: (ws: Workspace | null) => void;
   clearWorkspace: () => void;
@@ -40,9 +39,11 @@ type WorkspaceState = {
   setDevice: (d: PreviewDevice) => void;
   setAiEditing: (path: string, editing: boolean) => void;
   bumpPreview: () => void;
+  upsertFile: (path: string, content: string, isBinary?: boolean) => void;
+  toSnapshot: () => { path: string; content: string; isBinary: boolean }[];
 };
 
-export const useWorkspaceStore = create<WorkspaceState>((set) => ({
+export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   currentWorkspaceId: null,
   workspace: null,
   files: {},
@@ -197,4 +198,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
       return { aiEditingFiles: next };
     }),
   bumpPreview: () => set((s) => ({ previewNonce: s.previewNonce + 1 })),
+  upsertFile: (path, content, isBinary = false) =>
+    set((s) => ({
+      files: { ...s.files, [path]: { content, isBinary } },
+    })),
+  toSnapshot: () => {
+    const files = get().files;
+    return Object.entries(files).map(([path, f]) => ({ path, content: f.content, isBinary: f.isBinary }));
+  },
 }));
