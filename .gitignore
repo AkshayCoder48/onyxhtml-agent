@@ -1,54 +1,87 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+```gitignore
+# Dependencies
+node_modules/
+.pnpm-store/
+.npm/
+.yarn/
+.yarnrc
+package-lock.json
+yarn.lock
+.nuxt/
+.next/
+.vercel/
 
-# dependencies
-node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# Build outputs
+dist/
+build/
+.out/
+.output/
+_coverage/
+.nyc_output/
+jest-coverage/
 
-# testing
-/coverage
+# TypeScript/JavaScript
+*.tsbuildinfo
+*.js.map
+*.jsx.map
+*.ts.map
+*.tsx.map
 
-# next.js
-/.next/
-/out/
+# Environment variables
+.env
+.env.local
+.env.*
+!.env.example
 
-# production
-/build
-
-# misc
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 .DS_Store
-*.pem
+Thumbs.db
 
-# debug
+# Logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+._*
 
-# vercel
-.vercel
+# Coverage
+coverage/
+.nyc_output/
+istanbul/
+.lcovonly
 
+# Compiled JavaScript
+lib/
+es/
+esm/
+cjs/
+umd/
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-local-*
-.claude
-.z-ai-config
-*.log
-dev.log
-dev.out.log
-test
-prompt
+# Lock files for other package managers
+pnpm-lock.yaml
+bun.lockb
 
-server.log
-# Skills directory
-/skills/
+# Browser extensions
+*.crx
+*.xpi
+*.nex
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+```
