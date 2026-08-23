@@ -1153,65 +1153,6 @@ const BRIDGE_SCRIPT = `
 })();
 `;
 
-// Resolve a relative path against a base directory
-function resolveAssetPath(
-  href: string,
-  entryDir: string,
-  files: Record<string, { content: string; isBinary: boolean }>
-): string | null {
-  if (!href) return null;
-  // Skip remote/data URLs
-  if (/^https?:\/\//i.test(href) || href.startsWith("//") || href.startsWith("data:") || href.startsWith("blob:") || href.startsWith("mailto:") || href.startsWith("tel:") || href.startsWith("javascript:")) {
-    return null;
-  }
-  
-  // Remove hash and query params
-  const cleaned = href.split("#")[0].split("?")[0].trim();
-  if (!cleaned) return null;
-  
-  // Remove leading ./ or /
-  let relative = cleaned.replace(/^\.\//, "").replace(/^\//, "");
-  
-  // If entry is in a subdirectory, prepend it
-  const candidates: string[] = [];
-  if (entryDir) {
-    candidates.push(`${entryDir}/${relative}`.replace(/\/+/g, "/"));
-  }
-  candidates.push(relative);
-  
-  // Try all candidates
-  for (const candidate of candidates) {
-    const normalized = candidate.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\//, "");
-    if (files[normalized]) return normalized;
-    // Case-insensitive fallback
-    const lower = normalized.toLowerCase();
-    for (const key of Object.keys(files)) {
-      if (key.toLowerCase() === lower) return key;
-    }
-  }
-  
-  return null;
-}
-
-// Recursively inline @import statements in CSS
-function inlineCssImports(
-  css: string,
-  files: Record<string, { content: string; isBinary: boolean }>,
-  fromDir: string,
-  seen: Set<string>
-): string {
-  return css.replace(
-    /@import\s+(?:url\(\s*)?['"]?([^'")\s]+)['"]?\s*\)?\s*;/gi,
-    (full, href: string) => {
-      const path = resolveAssetPath(href, fromDir, files);
-      if (!path || seen.has(path)) return full;
-      seen.add(path);
-      const nested = files[path]?.content ?? "";
-      return `/* inlined ${path} */\n${inlineCssImports(nested, files, dirname(path), seen)}\n`;
-    }
-  );
-}
-
 export function buildPreviewDoc(
   files: Record<string, { content: string; isBinary: boolean }>,
   entry: string
@@ -1219,71 +1160,57 @@ export function buildPreviewDoc(
   const html = files[entry]?.content ?? "";
   if (!html) return "<!doctype html><html><body><p>No HTML to preview.</p></body></html>";
 
-  const entryDir = dirname(entry);
-  const used = new Set<string>([entry]);
+  const inlinable = new Set(Object.keys(files));
 
-  // Inline <link rel="stylesheet" href="local.css"> with @import support
+  // Inline <link rel="stylesheet" href="local.css">
   let out = html.replace(
     /<link\b[^>]*?rel=["']stylesheet["'][^>]*?>/gi,
     (tag) => {
       const m = tag.match(/href=["']([^"']+)["']/i);
       if (!m) return tag;
       const href = m[1];
-      const path = resolveAssetPath(href, entryDir, files);
-      if (!path) return tag;
-      used.add(path);
-      const css = inlineCssImports(files[path]?.content ?? "", files, dirname(path), new Set([path]));
+      if (/^https?:\/\//i.test(href) || href.startsWith("//") || href.startsWith("data:"))
+        return tag;
+      const path = href.replace(/^\.?\//, "");
+      if (!inlinable.has(path)) return tag;
+      const css = files[path]?.content ?? "";
       return `<style data-src="${path}">\n${css}\n</style>`;
     }
   );
 
-  // Inline <script src="local.js"> - supports .js, .mjs, .cjs, .ts
-  out = out.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*?)>\s*<\/script>/gi, (tag, pre, src, post) => {
-    const path = resolveAssetPath(src, entryDir, files);
-    if (!path) return tag;
-    used.add(path);
+  // Inline <script src="local.js">
+  out = out.replace(/<script\b([^>]*?)src=["']([^"']+)["']([^>]*?)><\/script>/gi, (tag, pre, src, post) => {
+    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+      return tag;
+    const path = src.replace(/^\.?\//, "");
+    if (!inlinable.has(path)) return tag;
     const js = files[path]?.content ?? "";
     const attrs = `${pre}${post}`.replace(/\s+/g, " ").trim();
     return `<script ${attrs} data-src="${path}">\n${js}\n</script>`;
   });
 
-  // Inline <img src="local.*"> for SVG / text (best-effort)
+  // Inline <img src="local.*"> for SVG / text (best-effort). For binary, we cannot
+  // embed directly without base64 — skip; the broken image will be reported by the bridge.
   out = out.replace(/<img\b([^>]*?)src=["']([^"']+)["']([^>]*?)>/gi, (tag, pre, src, post) => {
-    const path = resolveAssetPath(src, entryDir, files);
-    if (!path) return tag;
+    if (/^https?:\/\//i.test(src) || src.startsWith("//") || src.startsWith("data:"))
+      return tag;
+    const path = src.replace(/^\.?\//, "");
+    if (!inlinable.has(path)) return tag;
     const f = files[path];
     if (!f || f.isBinary) return tag;
-    // Only SVG can be inlined as a data URL
+    // Text content: only SVG can be inlined as a data URL
     if (path.toLowerCase().endsWith(".svg")) {
-      used.add(path);
       const data = `data:image/svg+xml;utf8,${encodeURIComponent(f.content)}`;
       return `<img ${pre} src="${data}" ${post} />`;
     }
     return tag;
   });
 
-  // Include additional unused CSS/JS files (for chunks and multi-file setups)
-  const extras: string[] = [];
-  for (const [path, f] of Object.entries(files)) {
-    if (used.has(path) || f.isBinary) continue;
-    if (path === "AGENT.md" || /\.md$/i.test(path)) continue;
-    
-    if (/\.css$/i.test(path)) {
-      used.add(path);
-      const css = inlineCssImports(f.content, files, dirname(path), new Set([path]));
-      extras.push(`<style data-src="${path}">\n${css}\n</style>`);
-    } else if (/\.(m?js|cjs|ts)$/i.test(path)) {
-      used.add(path);
-      extras.push(`<script data-src="${path}">\n${f.content}\n</script>`);
-    }
-  }
-
-  // Inject extras and bridge before </body>
-  const extrasHtml = extras.join("\n");
+  // Inject bridge before </body> (or at the end of the document).
   if (/<\/body>/i.test(out)) {
-    out = out.replace(/<\/body>/i, `${extrasHtml}<script>${BRIDGE_SCRIPT}</script></body>`);
+    out = out.replace(/<\/body>/i, `<script>${BRIDGE_SCRIPT}</script></body>`);
   } else {
-    out = `${out}${extrasHtml}<script>${BRIDGE_SCRIPT}</script>`;
+    out = `${out}<script>${BRIDGE_SCRIPT}</script>`;
   }
   return out;
 }
